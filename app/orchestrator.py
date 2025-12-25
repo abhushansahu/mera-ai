@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.context_monitor import context_utilization_percent
 from app.error_handler import handle_error_with_learning
 from app.llm_client import call_openrouter_chat
+from app.memory_factory import MemoryManager, get_memory_manager
 from app.memory_mem0 import Mem0Wrapper
 from app.models import ConversationMessage
 from app.multi_agent_context_system import (
@@ -62,13 +63,13 @@ def _build_initial_state(user_id: str, query: str, model: str) -> ConversationSt
 
 @observe(name="parallel_context_retrieval")
 async def _parallel_context_retrieval_node(
-    state: ConversationState, mem0: Mem0Wrapper, obsidian: ObsidianClient
+    state: ConversationState, memory: MemoryManager, obsidian: ObsidianClient
 ) -> ConversationState:
-    """Retrieve mem0 and obsidian context in parallel for better performance."""
-    mem0_task = mem0.search(user_id=state["user_id"], query=state["query"], limit=5)
+    """Retrieve memory and obsidian context in parallel for better performance."""
+    memory_task = memory.search(user_id=state["user_id"], query=state["query"], limit=5)
     obsidian_task = obsidian.search(query=state["query"], limit=5)
     
-    results, notes = await asyncio.gather(mem0_task, obsidian_task)
+    results, notes = await asyncio.gather(memory_task, obsidian_task)
     
     state["mem0_results"] = results
     snippets = [n.get("content", "") for n in notes]
@@ -238,13 +239,13 @@ def _monitor_context_node(state: ConversationState) -> ConversationState:
 
 
 @observe(name="mem0_store")
-async def _store_mem0_node(state: ConversationState, mem0: Mem0Wrapper) -> ConversationState:
-    """Store the latest interaction into Mem0 for future retrieval (fire-and-forget)."""
+async def _store_mem0_node(state: ConversationState, memory: MemoryManager) -> ConversationState:
+    """Store the latest interaction into memory for future retrieval (fire-and-forget)."""
     if not state.get("answer"):
         return state
 
     asyncio.create_task(
-        mem0.store(
+        memory.store(
             user_id=state["user_id"],
             text=f"Q: {state['query']}\nA: {state['answer']}",
             metadata={"source": "unified-assistant"},
@@ -273,27 +274,30 @@ async def _update_obsidian_node(state: ConversationState, obsidian: ObsidianClie
 
 @dataclass
 class UnifiedOrchestrator:
-    """LangGraph-based orchestrator with Mem0 + Obsidian + RPI + sub-agents + reviews."""
+    """LangGraph-based orchestrator with Memory + Obsidian + RPI + sub-agents + reviews."""
 
-    mem0: Mem0Wrapper = field(default_factory=Mem0Wrapper)
+    memory: MemoryManager = field(default_factory=get_memory_manager)
     obsidian: ObsidianClient = field(default_factory=ObsidianClient)
     coordinator: Optional[MultiAgentCoordinator] = None
     review_store: InMemoryReviewStore = field(default_factory=InMemoryReviewStore)
 
     def __post_init__(self) -> None:
         if self.coordinator is None:
-            self.coordinator = MultiAgentCoordinator.production(mem0_wrapper=self.mem0)
+            # MultiAgentCoordinator expects mem0_wrapper, but we can pass any MemoryManager
+            # For now, we'll pass it as mem0_wrapper for backward compatibility
+            mem0_wrapper = self.memory if isinstance(self.memory, Mem0Wrapper) else None
+            self.coordinator = MultiAgentCoordinator.production(mem0_wrapper=mem0_wrapper)
 
         graph = StateGraph(ConversationState)
 
-        graph.add_node("parallel_context", lambda s: _parallel_context_retrieval_node(s, self.mem0, self.obsidian))
+        graph.add_node("parallel_context", lambda s: _parallel_context_retrieval_node(s, self.memory, self.obsidian))
         graph.add_node("research", lambda s: _research_node(s, self.coordinator))
         graph.add_node("research_review", lambda s: _research_review_node(s, self.review_store))
         graph.add_node("plan", _plan_node)
         graph.add_node("plan_review", lambda s: _plan_review_node(s, self.review_store))
         graph.add_node("implement", _implement_node)
         graph.add_node("monitor_context", _monitor_context_node)
-        graph.add_node("mem0_store", lambda s: _store_mem0_node(s, self.mem0))
+        graph.add_node("mem0_store", lambda s: _store_mem0_node(s, self.memory))
         graph.add_node("obsidian_update", lambda s: _update_obsidian_node(s, self.obsidian))
 
         graph.add_edge(START, "parallel_context")

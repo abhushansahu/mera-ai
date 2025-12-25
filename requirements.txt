@@ -8,7 +8,10 @@ httpx
 langgraph
 langchain-core
 langchain-openai
+langchain>=0.1.0
+langchain-community>=0.0.20
 mem0ai
+chromadb>=0.4.0
 tiktoken
 apscheduler
 pytest

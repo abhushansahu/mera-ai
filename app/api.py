@@ -13,6 +13,7 @@ from app.config import settings
 from app.db import Base, engine, get_db
 from app.langfuse_client import get_langfuse_client, get_langfuse_error, is_langfuse_enabled
 from app.orchestrator import UnifiedOrchestrator
+from app.orchestrator_langchain import LangChainOrchestrator
 
 
 class ChatRequest(BaseModel):
@@ -61,7 +62,14 @@ def create_app() -> FastAPI:
     else:
         logger.info("Langfuse observability disabled (keys not configured)")
     
-    orchestrator = UnifiedOrchestrator()
+    # Select orchestrator based on feature flag
+    if settings.use_langchain_orchestrator:
+        logger.info("Using LangChain orchestrator")
+        orchestrator = LangChainOrchestrator()
+    else:
+        logger.info("Using LangGraph orchestrator (default)")
+        orchestrator = UnifiedOrchestrator()
+    
     database_connected = False
     database_error = None
 
@@ -154,11 +162,15 @@ def create_app() -> FastAPI:
 
     @app.post("/mem0/add")
     async def add_memory(request: AddMemoryRequest) -> Dict[str, str]:
-        """Add a memory via Mem0 (proxy endpoint for Obsidian plugin)."""
-        from app.memory_mem0 import Mem0Wrapper
+        """Add a memory via memory manager (proxy endpoint for Obsidian plugin).
+        
+        Uses Chroma if USE_CHROMA=true, otherwise uses Mem0.
+        Maintains backward compatibility with existing Obsidian plugin.
+        """
+        from app.memory_factory import get_memory_manager
         try:
-            mem0 = Mem0Wrapper()
-            await mem0.store(
+            memory = get_memory_manager()
+            await memory.store(
                 user_id=request.user_id,
                 text=request.messages if isinstance(request.messages, str) else str(request.messages),
                 metadata=request.metadata,
@@ -169,11 +181,15 @@ def create_app() -> FastAPI:
 
     @app.post("/mem0/search")
     async def search_memories(request: SearchMemoryRequest) -> Dict[str, Any]:
-        """Search memories via Mem0 (proxy endpoint for Obsidian plugin)."""
-        from app.memory_mem0 import Mem0Wrapper
+        """Search memories via memory manager (proxy endpoint for Obsidian plugin).
+        
+        Uses Chroma if USE_CHROMA=true, otherwise uses Mem0.
+        Maintains backward compatibility with existing Obsidian plugin.
+        """
+        from app.memory_factory import get_memory_manager
         try:
-            mem0 = Mem0Wrapper()
-            results = await mem0.search(
+            memory = get_memory_manager()
+            results = await memory.search(
                 user_id=request.user_id,
                 query=request.query,
                 limit=request.limit,
@@ -184,12 +200,16 @@ def create_app() -> FastAPI:
 
     @app.get("/mem0/get_all/{user_id}")
     async def get_all_memories(user_id: str, limit: int = 100) -> Dict[str, Any]:
-        """Get all memories for a user via Mem0 (proxy endpoint for Obsidian plugin)."""
-        from app.memory_mem0 import Mem0Wrapper
+        """Get all memories for a user via memory manager (proxy endpoint for Obsidian plugin).
+        
+        Uses Chroma if USE_CHROMA=true, otherwise uses Mem0.
+        Maintains backward compatibility with existing Obsidian plugin.
+        """
+        from app.memory_factory import get_memory_manager
         try:
-            mem0 = Mem0Wrapper()
-            # Note: Mem0Wrapper doesn't have get_all, so we'll use search with a broad query
-            results = await mem0.search(
+            memory = get_memory_manager()
+            # Note: Memory managers don't have get_all, so we'll use search with a broad query
+            results = await memory.search(
                 user_id=user_id,
                 query="",
                 limit=limit,
