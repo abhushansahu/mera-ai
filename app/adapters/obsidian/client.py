@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -6,20 +7,37 @@ import httpx
 from app.infrastructure.cache import get_cached, set_cached
 from app.infrastructure.config.settings import get_settings
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ObsidianAdapter:
+    """Obsidian integration via Local REST API plugin with async support.
+
+    Requires Obsidian with the "Local REST API" plugin installed and enabled.
+    Default URL: http://localhost:27124
+    Set OBSIDIAN_REST_URL and OBSIDIAN_REST_TOKEN environment variables.
+    """
+
     base_url: str
     token: Optional[str] = None
+    vault_path: Optional[str] = None
     _client: Optional[httpx.AsyncClient] = None
 
-    def __init__(self, base_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        token: Optional[str] = None,
+        vault_path: Optional[str] = None,
+    ) -> None:
         settings = get_settings()
         self.base_url = base_url or settings.obsidian_rest_url or "http://localhost:27124"
         self.token = token or settings.obsidian_rest_token
+        self.vault_path = vault_path or settings.obsidian_vault_path
         self._client = None
 
     async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create async HTTP client with connection pooling."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=5.0,
@@ -28,6 +46,7 @@ class ObsidianAdapter:
         return self._client
 
     async def close(self) -> None:
+        """Close the async HTTP client."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -38,36 +57,44 @@ class ObsidianAdapter:
         content: str,
         tags: Optional[List[str]] = None,
     ) -> None:
+        """Create a new note in Obsidian vault via REST API asynchronously."""
         headers = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
+        # Sanitize title for filename
         filename = title.replace("/", "-").replace("\\", "-").strip()
         if not filename.endswith(".md"):
             filename += ".md"
 
+        # Add tags to content if provided
         if tags:
             tag_line = " ".join([f"#{tag}" for tag in tags])
             content = f"{tag_line}\n\n{content}"
 
         try:
             client = await self._get_client()
+            payload = {"path": filename, "content": content}
+            # Include vault_path if specified (some Obsidian REST API plugins support this)
+            if self.vault_path:
+                payload["vault"] = self.vault_path
             response = await client.post(
                 f"{self.base_url}/vault/create",
                 headers=headers,
-                json={"path": filename, "content": content},
+                json=payload,
             )
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"Obsidian API error (create_note): {e}")
+            logger.warning(f"Obsidian API error (create_note): {e}")
 
     async def search(
         self,
         query: str,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
+        """Search Obsidian vault via REST API asynchronously with caching."""
         cache_key = (query, limit)
-        cached_result = await get_cached("obsidian_search", cache_key, None)
+        cached_result = await get_cached("obsidian_search", cache_key)
         if cached_result is not None:
             return cached_result
         
@@ -77,10 +104,14 @@ class ObsidianAdapter:
 
         try:
             client = await self._get_client()
+            payload = {"query": query, "limit": limit}
+            # Include vault_path if specified (some Obsidian REST API plugins support this)
+            if self.vault_path:
+                payload["vault"] = self.vault_path
             response = await client.post(
                 f"{self.base_url}/vault/search",
                 headers=headers,
-                json={"query": query, "limit": limit},
+                json=payload,
             )
             response.raise_for_status()
             results = response.json()
@@ -91,8 +122,8 @@ class ObsidianAdapter:
             else:
                 final_results = []
             
-            await set_cached("obsidian_search", cache_key, final_results, None, ttl=1800)
+            await set_cached("obsidian_search", cache_key, final_results, ttl=1800)
             return final_results
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"Obsidian API error (search): {e}")
+            logger.warning(f"Obsidian API error (search): {e}")
             return []

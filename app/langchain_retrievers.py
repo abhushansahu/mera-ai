@@ -5,8 +5,21 @@ from typing import List, Optional
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
-from app.memory_factory import MemoryManager, get_memory_manager
-from app.obsidian_client import ObsidianClient
+from app.adapters.chroma import ChromaMemoryAdapter
+from app.adapters.obsidian import ObsidianClient
+from app.core import MemoryManager
+from app.infrastructure.config.settings import get_settings
+
+
+def _get_memory_manager(collection_name: Optional[str] = None) -> ChromaMemoryAdapter:
+    """Get memory manager with optional collection name override."""
+    settings = get_settings()
+    return ChromaMemoryAdapter(
+        host=settings.chroma_host,
+        port=settings.chroma_port,
+        collection_name=collection_name or settings.chroma_collection_name,
+        persist_directory=settings.chroma_persist_dir,
+    )
 
 
 class ChromaRetriever(BaseRetriever):
@@ -25,7 +38,7 @@ class ChromaRetriever(BaseRetriever):
             k: Number of documents to retrieve
         """
         super().__init__(**kwargs)
-        self.memory = memory or get_memory_manager()
+        self.memory = memory or _get_memory_manager()
         self.user_id = user_id
         self.k = k
 

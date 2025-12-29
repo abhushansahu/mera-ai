@@ -4,7 +4,7 @@ from typing import List, Optional
 
 import httpx
 
-from app.core.llm import LLMMessage, LLMResponse
+from app.core import LLMMessage, LLMResponse
 from app.infrastructure.config.settings import get_settings
 
 
@@ -14,6 +14,10 @@ def _build_headers(api_key: str) -> dict[str, str]:
         "HTTP-Referer": "https://localhost",
         "X-Title": "Unified AI Assistant",
     }
+
+
+# Export as build_headers for backward compatibility
+build_headers = _build_headers
 
 
 _async_client: Optional[httpx.AsyncClient] = None
@@ -36,6 +40,10 @@ async def _close_async_client() -> None:
     if _async_client is not None:
         await _async_client.aclose()
         _async_client = None
+
+
+# Export for use in shutdown handlers
+__all__ = ["_close_async_client", "_get_async_client", "build_headers"]
 
 
 class OpenRouterLLMAdapter:
@@ -107,3 +115,36 @@ class OpenRouterLLMAdapter:
         if last_exception:
             raise last_exception
         raise RuntimeError("Failed to get response after retries")
+
+
+# Backward compatibility function
+async def call_openrouter_chat(
+    model: str,
+    messages: List[dict],
+    api_key: str | None = None,
+    base_url: str | None = None,
+    client: Optional[httpx.AsyncClient] = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+) -> str:
+    """Call OpenRouter's chat completions endpoint (backward compatibility wrapper).
+    
+    This function is kept for backward compatibility. New code should use
+    OpenRouterLLMAdapter directly.
+    """
+    adapter = OpenRouterLLMAdapter(api_key=api_key, base_url=base_url)
+    
+    # Convert dict messages to LLMMessage format
+        from app.core import LLMMessage
+    llm_messages = [
+        LLMMessage(role=msg["role"], content=msg["content"])
+        for msg in messages
+    ]
+    
+    response = await adapter.chat(
+        messages=llm_messages,
+        model=model,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
+    )
+    return response.content

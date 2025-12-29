@@ -3,7 +3,9 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
-from app.config import settings
+from app.infrastructure.config.settings import get_settings
+
+settings = get_settings()
 
 # Convert database URL to async format
 async_database_url = settings.database_url

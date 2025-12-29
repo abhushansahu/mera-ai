@@ -2,25 +2,81 @@
 
 from typing import List, Optional
 
-# Note: AgentExecutor and create_openai_tools_agent are not currently used
-# but kept for future agent-based implementations
-# If needed, import with: from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.callbacks import CallbackManager
 from langsmith import traceable
 
-from app.langchain_retrievers import ChromaRetriever
-from app.infrastructure.indexing import LlamaIndexRetriever, ObsidianIndexer
+from app.adapters.chroma import ChromaMemoryAdapter
+from app.adapters.obsidian import ObsidianClient
+from app.adapters.openrouter import call_openrouter_chat
 from app.infrastructure.config.settings import get_settings
+from app.infrastructure.indexing import LlamaIndexRetriever, ObsidianIndexer
+from app.langchain_retrievers import ChromaRetriever
 from app.langchain_tools import create_tools_from_coordinator
-from app.llm_client import call_openrouter_chat
 from app.multi_agent_context_system import MultiAgentCoordinator
-from app.obsidian_client import ObsidianClient
-from app.prompts import RESEARCH_PROMPT, PLAN_PROMPT, IMPLEMENT_PROMPT
-from app.memory_factory import MemoryManager, get_memory_manager
-from app.infrastructure.observability import is_langsmith_enabled
+
+# Inline prompts
+RESEARCH_PROMPT = """TASK: A good group of people are understanding the user's request deeply.
+
+USER QUERY:
+{query}
+
+MEMORIES:
+{memories}
+
+OBSIDIAN CONTEXT:
+{obsidian_context}
+
+OUTPUT: A concise markdown document named 'research.md' with sections:
+1. Problem Statement
+2. Key Context and Constraints
+3. Relevant Prior Information
+4. Open Questions / Gaps
+5. Recommended High-Level Approach
+
+Be factual and avoid speculation."""
+
+PLAN_PROMPT = """A good group of people are creating an implementation plan.
+
+INPUT:
+- USER QUERY
+- RESEARCH DOCUMENT
+
+Create a markdown document named 'plan.md' with:
+1. Step-by-step sequence of actions
+2. Data or state that must be read or written
+3. Any external tools or services that should be called
+4. Testing and validation steps
+5. Clear success criteria
+
+The plan should be explicit enough that a less-capable model can follow it reliably."""
+
+IMPLEMENT_PROMPT = """A good group of people are executing a pre-written plan exactly.
+
+INPUT:
+- USER QUERY
+- RESEARCH DOCUMENT
+- IMPLEMENTATION PLAN
+
+TASK:
+- Follow the plan step-by-step.
+- Do not introduce unrelated work.
+- When unsure, state the uncertainty explicitly.
+
+OUTPUT:
+- Final answer for the user
+- Brief summary of what you did"""
+
+
+def _get_memory_manager(collection_name: Optional[str] = None) -> ChromaMemoryAdapter:
+    """Get memory manager with optional collection name override."""
+    settings = get_settings()
+    return ChromaMemoryAdapter(
+        host=settings.chroma_host,
+        port=settings.chroma_port,
+        collection_name=collection_name or settings.chroma_collection_name,
+        persist_directory=settings.chroma_persist_dir,
+    )
 
 
 class OpenRouterLLM:
@@ -46,7 +102,7 @@ class OpenRouterLLM:
 def create_research_chain(
     user_id: str,
     model: str = "openai/gpt-4o-mini",
-    memory: Optional[MemoryManager] = None,
+    memory: Optional[ChromaMemoryAdapter] = None,
     obsidian: Optional[ObsidianClient] = None,
     coordinator: Optional[MultiAgentCoordinator] = None,
 ) -> RunnablePassthrough:
@@ -55,14 +111,14 @@ def create_research_chain(
     Args:
         user_id: User identifier
         model: LLM model to use
-        memory: MemoryManager instance (defaults to factory)
+        memory: ChromaMemoryAdapter instance (defaults to factory)
         obsidian: ObsidianClient instance (defaults to new instance)
         coordinator: MultiAgentCoordinator for context sources (optional)
     
     Returns:
         LangChain chain that takes a query and returns research output
     """
-    memory = memory or get_memory_manager()
+    memory = memory or _get_memory_manager()
     
     # Create retrievers
     chroma_retriever = ChromaRetriever(memory=memory, user_id=user_id, k=5)

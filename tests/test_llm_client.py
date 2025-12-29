@@ -1,4 +1,4 @@
-from app.llm_client import build_headers
+from app.adapters.openrouter import build_headers
 
 
 def test_build_headers_includes_authorization() -> None:

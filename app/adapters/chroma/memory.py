@@ -6,8 +6,7 @@ from uuid import uuid4
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 
-from app.core.memory import Memory
-from app.core.types import UserID
+from app.core import Memory, UserID
 from app.infrastructure.cache import get_cached, set_cached
 from app.infrastructure.embeddings import get_embeddings
 
