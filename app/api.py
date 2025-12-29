@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -5,8 +6,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi import status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,9 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     user_id: str
     answer: str
+    research: Optional[str] = None
+    plan: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StatusResponse(BaseModel):
@@ -202,7 +206,13 @@ def create_app() -> FastAPI:
             db=db,
             space_manager=space_manager,
         )
-        return ChatResponse(user_id=request.user_id, answer=result.answer)
+        return ChatResponse(
+            user_id=request.user_id,
+            answer=result.answer,
+            research=result.research,
+            plan=result.plan,
+            metadata=result.metadata,
+        )
 
     @app.post("/mem0/add")
     async def add_memory(request: AddMemoryRequest) -> Dict[str, str]:
@@ -458,6 +468,109 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             logger.error(f"Error deleting space: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/chat/stream")
+    async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
+        """Stream chat responses with real-time RPI workflow updates."""
+        if not database_connected:
+            raise HTTPException(status_code=503, detail="Database is not connected.")
+        
+        context_sources = None
+        if request.context_sources:
+            context_sources = [ContextSource(**cs) for cs in request.context_sources]
+        
+        space_manager = None
+        if request.space_id:
+            space_manager = SpaceManager(db)
+            try:
+                await space_manager.switch_space(request.space_id)
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+        
+        async def generate_stream():
+            try:
+                yield f"data: {json.dumps({'type': 'start', 'message': 'Starting workflow...'})}\n\n"
+                result = await orchestrator.process_query(
+                    user_id=request.user_id,
+                    query=request.query,
+                    model=request.model,
+                    context_sources=context_sources,
+                    db=db,
+                    space_manager=space_manager,
+                )
+                if result.research:
+                    yield f"data: {json.dumps({'type': 'research', 'content': result.research})}\n\n"
+                if result.plan:
+                    yield f"data: {json.dumps({'type': 'plan', 'content': result.plan})}\n\n"
+                yield f"data: {json.dumps({'type': 'answer', 'content': result.answer})}\n\n"
+                yield f"data: {json.dumps({'type': 'metadata', 'data': result.metadata})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            except Exception as e:
+                logger.error(f"Error in stream: {e}", exc_info=True)
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        
+        return StreamingResponse(generate_stream(), media_type="text/event-stream")
+
+    @app.get("/workflow/{session_id}/agents")
+    async def get_agent_activity(session_id: str) -> Dict[str, Any]:
+        """Get agent activity for a workflow session."""
+        # For now, return static agent info. In future, this can track real-time agent states
+        return {
+            "session_id": session_id,
+            "agents": [
+                {"name": "Researcher", "role": "Research Assistant", "status": "idle", "tools_used": []},
+                {"name": "Planner", "role": "Implementation Planner", "status": "idle", "tools_used": []},
+                {"name": "Implementer", "role": "Implementation Executor", "status": "idle", "tools_used": []},
+            ],
+            "workflow_stage": "idle",
+        }
+
+    @app.get("/spaces/{space_id}/visualization")
+    async def get_space_visualization(
+        space_id: str,
+        month: Optional[str] = None,
+        db: AsyncSession = Depends(get_db),
+    ) -> Dict[str, Any]:
+        """Get visualization data for a space."""
+        if not database_connected:
+            raise HTTPException(status_code=503, detail="Database is not connected.")
+        
+        space_manager = SpaceManager(db)
+        try:
+            await space_manager.switch_space(space_id)
+            space_config = space_manager.get_current_space()
+            usage = await space_manager.get_space_usage(space_id, month=month)
+            
+            # Get memory connections (simplified - can be enhanced)
+            from app.adapters.chroma import ChromaMemoryAdapter
+            from app.config import get_settings
+            settings = get_settings()
+            memory = ChromaMemoryAdapter(
+                host=settings.chroma_host,
+                port=settings.chroma_port,
+                collection_name=space_config.mem0_collection_name,
+                persist_directory=settings.chroma_persist_dir,
+            )
+            
+            # Sample recent memories for graph
+            recent_memories = await memory.search(user_id="*", query="", limit=20)
+            
+            return {
+                "space_id": space_id,
+                "usage": {
+                    "tokens_used": usage.tokens_used,
+                    "api_calls_used": usage.api_calls_used,
+                    "cost_usd": float(usage.cost_usd),
+                    "tokens_remaining": usage.get_budget_remaining(space_config),
+                },
+                "memory_count": len(recent_memories),
+                "memories": [{"id": i, "text": m.text[:100], "score": m.score} for i, m in enumerate(recent_memories)],
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error getting space visualization: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     return app

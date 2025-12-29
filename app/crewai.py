@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from crewai import Agent, Task
-from crewai_tools import Tool
+from crewai.tools import tool
 
 from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.obsidian import ObsidianClient
@@ -89,16 +89,12 @@ class ChromaMemoryTool:
             for i, m in enumerate(results)
         ])
 
-    def to_crewai_tool(self) -> Tool:
-        return Tool(
-            name="memory_search",
-            description=(
-                "Search the user's memory store for relevant past conversations, "
-                "stored knowledge, or context. Use this to retrieve information "
-                "from previous interactions."
-            ),
-            func=self.search_memory,
-        )
+    def to_crewai_tool(self):
+        @tool("memory_search")
+        def memory_search_tool(query: str, limit: int = 5) -> str:
+            """Search the user's memory store for relevant past conversations, stored knowledge, or context. Use this to retrieve information from previous interactions."""
+            return self.search_memory(query, limit)
+        return memory_search_tool
 
 
 class ObsidianTool:
@@ -118,16 +114,12 @@ class ObsidianTool:
             for r in results
         ])
 
-    def to_crewai_tool(self) -> Tool:
-        return Tool(
-            name="obsidian_search",
-            description=(
-                "Search the Obsidian knowledge base vault for relevant notes, "
-                "documentation, or stored knowledge. Use this to retrieve information "
-                "from the user's personal knowledge base."
-            ),
-            func=self.search_obsidian,
-        )
+    def to_crewai_tool(self):
+        @tool("obsidian_search")
+        def obsidian_search_tool(query: str, limit: int = 5) -> str:
+            """Search the Obsidian knowledge base vault for relevant notes, documentation, or stored knowledge. Use this to retrieve information from the user's personal knowledge base."""
+            return self.search_obsidian(query, limit)
+        return obsidian_search_tool
 
 
 class FileExplorerCrewAITool:
@@ -147,16 +139,12 @@ class FileExplorerCrewAITool:
         ]
         return asyncio.run(self.file_agent.run(sources, query=""))
 
-    def to_crewai_tool(self) -> Tool:
-        return Tool(
-            name="file_explorer",
-            description=(
-                "Explore local files and directories. "
-                "Use this tool to read file contents or list directory structures. "
-                "Input should be a list of file or directory paths (comma-separated)."
-            ),
-            func=self.explore_files,
-        )
+    def to_crewai_tool(self):
+        @tool("file_explorer")
+        def file_explorer_tool(paths: str) -> str:
+            """Explore local files and directories. Use this tool to read file contents or list directory structures. Input should be a list of file or directory paths (comma-separated)."""
+            return self.explore_files(paths)
+        return file_explorer_tool
 
 
 class LinkCrawlerCrewAITool:
@@ -176,16 +164,12 @@ class LinkCrawlerCrewAITool:
         ]
         return asyncio.run(self.link_agent.run(sources, query=""))
 
-    def to_crewai_tool(self) -> Tool:
-        return Tool(
-            name="link_crawler",
-            description=(
-                "Fetch and summarize content from URLs or API endpoints. "
-                "Use this tool to retrieve documentation, web pages, or API responses. "
-                "Input should be a list of URLs or API endpoints (comma-separated)."
-            ),
-            func=self.crawl_links,
-        )
+    def to_crewai_tool(self):
+        @tool("link_crawler")
+        def link_crawler_tool(urls: str) -> str:
+            """Fetch and summarize content from URLs or API endpoints. Use this tool to retrieve documentation, web pages, or API responses. Input should be a list of URLs or API endpoints (comma-separated)."""
+            return self.crawl_links(urls)
+        return link_crawler_tool
 
 
 class DataAnalyzerCrewAITool:
@@ -199,16 +183,12 @@ class DataAnalyzerCrewAITool:
         sources = [ContextSource(type=ContextSourceType.DATABASE, path=dsn)]
         return asyncio.run(self.data_agent.run(sources, query=self.query_context or ""))
 
-    def to_crewai_tool(self) -> Tool:
-        return Tool(
-            name="data_analyzer",
-            description=(
-                "Analyze database schemas and structures. "
-                "Use this tool to explore database tables, columns, and relationships. "
-                "Input should be a database connection string (DSN)."
-            ),
-            func=self.analyze_database,
-        )
+    def to_crewai_tool(self):
+        @tool("data_analyzer")
+        def data_analyzer_tool(dsn: str) -> str:
+            """Analyze database schemas and structures. Use this tool to explore database tables, columns, and relationships. Input should be a database connection string (DSN)."""
+            return self.analyze_database(dsn)
+        return data_analyzer_tool
 
 
 class MemoryRetrieverCrewAITool:
@@ -227,16 +207,12 @@ class MemoryRetrieverCrewAITool:
         sources = [ContextSource(type=ContextSourceType.MEMORY, path=identifier)]
         return asyncio.run(self.memory_agent.run(sources, query=query))
 
-    def to_crewai_tool(self) -> Tool:
-        return Tool(
-            name="memory_retriever",
-            description=(
-                "Retrieve relevant memories from the memory store. "
-                "Use this tool to search for past conversations, stored knowledge, or user context. "
-                "Input should be 'identifier:query' or just 'query' (uses default identifier)."
-            ),
-            func=self.retrieve_memory,
-        )
+    def to_crewai_tool(self):
+        @tool("memory_retriever")
+        def memory_retriever_tool(identifier_and_query: str) -> str:
+            """Retrieve relevant memories from the memory store. Use this tool to search for past conversations, stored knowledge, or user context. Input should be 'identifier:query' or just 'query' (uses default identifier)."""
+            return self.retrieve_memory(identifier_and_query)
+        return memory_retriever_tool
 
 
 def create_crewai_tools(
@@ -244,7 +220,7 @@ def create_crewai_tools(
     obsidian: Optional[ObsidianClient] = None,
     coordinator: Optional[MultiAgentCoordinator] = None,
     user_id: str = "default",
-) -> list[Tool]:
+) -> list:
     """Create CrewAI tools from adapters and coordinator."""
     tools = []
     if memory:
@@ -264,7 +240,7 @@ def create_crewai_tools(
 
 
 # Agents
-def create_researcher_agent(tools: List[Tool], llm=None, verbose: bool = False) -> Agent:
+def create_researcher_agent(tools: List, llm=None, verbose: bool = False) -> Agent:
     """Create Researcher Agent for gathering context."""
     return Agent(
         role="Research Assistant",
@@ -303,7 +279,7 @@ def create_planner_agent(llm=None, verbose: bool = False) -> Agent:
     )
 
 
-def create_implementer_agent(tools: List[Tool], llm=None, verbose: bool = False) -> Agent:
+def create_implementer_agent(tools: List, llm=None, verbose: bool = False) -> Agent:
     """Create Implementer Agent for executing plans."""
     return Agent(
         role="Implementation Executor",

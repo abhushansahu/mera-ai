@@ -17,6 +17,7 @@ A self-hosted AI assistant that provides a single interface to chat with multipl
 ### Prerequisites
 
 - Docker and Docker Compose
+- Node.js 18+ and npm (for frontend UI)
 - OpenRouter API key ([get one here](https://openrouter.ai/))
 
 ### Setup
@@ -46,8 +47,11 @@ cp env.example .env
 **Option A: Using the convenience script (Recommended)**
 
 ```bash
-# Single command to start everything
+# Single command to start everything (backend + frontend)
 ./start.sh
+
+# Stop everything
+./stop.sh
 ```
 
 **Option B: Using docker-compose directly**
@@ -66,7 +70,9 @@ docker-compose ps
 This starts:
 - PostgreSQL (database)
 - Mera AI Application (with all dependencies)
+- Frontend UI (Next.js web interface)
 
+The UI will be available at http://localhost:3000
 The API will be available at http://localhost:8000
 
 #### 4. Stop Services
@@ -81,7 +87,16 @@ docker-compose down
 
 ## Usage
 
-### Chat with AI
+### Using the Web UI (Recommended)
+
+The easiest way to interact with Mera AI is through the web interface:
+
+1. Open http://localhost:3000 in your browser
+2. Select or create a space for your project
+3. Start chatting! The UI will show the Research → Plan → Implement workflow in real-time
+4. View agent interactions, memory graphs, and space usage metrics
+
+### Chat with AI (API)
 
 **Basic chat (without Spaces):**
 
