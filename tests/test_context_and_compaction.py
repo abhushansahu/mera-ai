@@ -2,17 +2,17 @@ from datetime import datetime
 
 from app.context_monitor import context_utilization_percent
 from app.memory_compaction import compact_memories
-from app.memory_mem0 import Mem0Wrapper
+from app.memory_factory import MemoryManager
 
 
-class DummyMem0(Mem0Wrapper):
+class DummyMemory(MemoryManager):
     def __init__(self) -> None:
         self.items: list[dict] = []
 
-    def store(self, user_id: str, text: str, metadata=None):  # type: ignore[override]
+    async def store(self, user_id: str, text: str, metadata=None):  # type: ignore[override]
         self.items.append({"user_id": user_id, "text": text, "metadata": metadata or {}})
 
-    def search(self, user_id: str, query: str, limit: int = 5):  # type: ignore[override]
+    async def search(self, user_id: str, query: str, limit: int = 5):  # type: ignore[override]
         return self.items[:limit]
 
 
@@ -22,12 +22,13 @@ def test_context_utilization_percent_is_reasonable() -> None:
     assert 0 < pct < 1  # tiny fraction of the full window
 
 
-def test_compact_memories_creates_snapshot() -> None:
-    mem0 = DummyMem0()
-    mem0.store("u1", "First memory")
-    mem0.store("u1", "Second memory")
+async def test_compact_memories_creates_snapshot() -> None:
+    import asyncio
+    memory = DummyMemory()
+    await memory.store("u1", "First memory")
+    await memory.store("u1", "Second memory")
 
-    result = compact_memories(mem0, user_id="u1", model="openai/gpt-4o-mini", now=datetime(2025, 1, 1))
+    result = await compact_memories(memory, user_id="u1", model="openai/gpt-4o-mini", now=datetime(2025, 1, 1))
     assert result["source_count"] == 2
     assert "Snapshot" in result["snapshot"]
 

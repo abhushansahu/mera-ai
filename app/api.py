@@ -1,18 +1,27 @@
 import logging
-import os
-from typing import List, Dict, Optional, Any
+from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger(__name__)
-
-from app.config import settings
+from app.core.types import ContextSource
 from app.db import Base, engine, get_db
-from app.langfuse_client import get_langfuse_client, get_langfuse_error, is_langfuse_enabled
-from app.orchestrator import UnifiedOrchestrator
+from app.infrastructure.config.settings import get_settings
+from app.infrastructure.observability import (
+    get_langsmith_client,
+    get_langsmith_error,
+    is_langsmith_enabled,
+)
+from app.orchestrators import LangChainUnifiedOrchestrator
+from app.adapters.openrouter.llm import _close_async_client
+
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -28,8 +37,6 @@ class ChatResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    """Status endpoint response showing configuration and health."""
-
     status: str
     required_api_keys: Dict[str, str]
     database_connected: bool
@@ -37,37 +44,111 @@ class StatusResponse(BaseModel):
     optional_services: Dict[str, bool]
 
 
-def create_app() -> FastAPI:
-    """Create a FastAPI application instance.
+class AddMemoryRequest(BaseModel):
+    user_id: str
+    messages: str | list[dict[str, str]]
+    metadata: Optional[dict] = None
 
-    Validates all required API keys and database connection at startup.
-    Fails fast if any required configuration is missing.
-    """
+
+class SearchMemoryRequest(BaseModel):
+    user_id: str
+    query: str
+    limit: int = 5
+
+
+def create_app() -> FastAPI:
     app = FastAPI(
         title="Unified AI Assistant",
         description="A unified AI assistant with persistent memory, context management, and multi-agent orchestration.",
     )
-    # Initialize Langfuse with error handling for ZodError issues
-    if is_langfuse_enabled():
-        langfuse_client = get_langfuse_client()
-        if langfuse_client:
-            logger.info("Langfuse observability enabled")
-        else:
-            error_msg = get_langfuse_error()
-            if error_msg:
-                logger.warning(f"Langfuse keys configured but client initialization failed: {error_msg}")
-            else:
-                logger.warning("Langfuse keys configured but client initialization failed (unknown error)")
-    else:
-        logger.info("Langfuse observability disabled (keys not configured)")
     
-    orchestrator = UnifiedOrchestrator()
+    # Add CORS middleware to handle OPTIONS requests
+    settings = get_settings()
+    # Allow CORS origins from environment or default to all for development
+    if settings.cors_origins:
+        # Parse comma-separated origins
+        allow_origins = [origin.strip() for origin in settings.cors_origins.split(",")]
+        allow_credentials = True
+    else:
+        # Default to all origins for development (change in production)
+        # Note: Cannot use ["*"] with allow_credentials=True, so we disable credentials
+        allow_origins = ["*"]
+        allow_credentials = False
+    
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["*"],  # Allows all methods including OPTIONS
+        allow_headers=["*"],
+    )
+    
+    # Add exception handler for validation errors to provide better error messages
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Handle validation errors and return detailed error messages."""
+        errors = exc.errors()
+        error_details = []
+        
+        # Check if the issue is missing Content-Type header
+        content_type = request.headers.get("content-type", "")
+        missing_content_type = not content_type or "application/json" not in content_type
+        
+        for error in errors:
+            field_path = ".".join(str(loc) for loc in error["loc"])
+            error_msg = error["msg"]
+            
+            # Provide helpful message for missing Content-Type
+            if missing_content_type and error["type"] == "model_attributes_type":
+                error_msg = (
+                    f"{error_msg}. "
+                    "Make sure to include 'Content-Type: application/json' header in your request."
+                )
+            
+            error_details.append({
+                "field": field_path,
+                "message": error_msg,
+                "type": error["type"]
+            })
+        
+        response_content = {
+            "detail": "Validation error",
+            "errors": error_details,
+        }
+        
+        # Add helpful hint about Content-Type if missing
+        if missing_content_type:
+            response_content["hint"] = (
+                "Your request is missing the 'Content-Type: application/json' header. "
+                "Add this header to your request to send JSON data."
+            )
+        
+        return JSONResponse(
+            status_code=422,
+            content=response_content,
+        )
+    
+    if is_langsmith_enabled():
+        langsmith_client = get_langsmith_client()
+        if langsmith_client:
+            logger.info("LangSmith observability enabled")
+        else:
+            error_msg = get_langsmith_error()
+            if error_msg:
+                logger.warning(f"LangSmith keys configured but client initialization failed: {error_msg}")
+            else:
+                logger.warning("LangSmith keys configured but client initialization failed (unknown error)")
+    else:
+        logger.info("LangSmith observability disabled (keys not configured)")
+    
+    logger.info("Using LangChain unified orchestrator")
+    orchestrator = LangChainUnifiedOrchestrator()
+    
     database_connected = False
     database_error = None
 
     @app.on_event("startup")
     async def startup_event() -> None:
-        """Validate database connection on startup."""
         nonlocal database_connected, database_error
         try:
             async with engine.begin() as conn:
@@ -80,85 +161,66 @@ def create_app() -> FastAPI:
             database_connected = False
             database_error = str(e)
             logger.error(f"Database connection failed: {database_error}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             database_connected = False
             database_error = str(e)
             logger.error(f"Database initialization failed: {database_error}")
 
     @app.on_event("shutdown")
     async def shutdown_event() -> None:
-        """Cleanup on shutdown."""
-        from app.llm_client import close_async_client
-        await close_async_client()
-        if hasattr(orchestrator, "obsidian"):
-            await orchestrator.obsidian.close()
+        await _close_async_client()
 
     @app.get("/status", response_model=StatusResponse)
     async def status() -> StatusResponse:
-        """Get server status and configuration information."""
+        current_settings = get_settings()
         db_display = "configured"
-        if settings.database_url and "@" in settings.database_url:
-            db_display = settings.database_url.split("@")[-1]
+        if current_settings.database_url and "@" in current_settings.database_url:
+            db_display = current_settings.database_url.split("@")[-1]
         
-        # Mem0 status: show host if self-hosted, or API key status if external
-        mem0_status = "✓ Configured"
-        if settings.mem0_host:
-            mem0_status = f"✓ Self-hosted ({settings.mem0_host})"
-        elif settings.mem0_api_key:
-            mem0_status = "✓ External (API key set)"
-        else:
-            mem0_status = "✗ Not configured"
+        chroma_status = "✓ Configured" if current_settings.chroma_host or True else "✗ Not configured"
         
         return StatusResponse(
             status="operational",
             required_api_keys={
-                "OPENROUTER_API_KEY": "✓ Set" if settings.openrouter_api_key else "✗ Missing",
-                "MEM0": mem0_status,
-                "DATABASE_URL": f"✓ Set ({db_display})" if settings.database_url else "✗ Missing",
+                "OPENROUTER_API_KEY": "✓ Set" if current_settings.openrouter_api_key else "✗ Missing",
+                "CHROMA": chroma_status,
+                "DATABASE_URL": f"✓ Set ({db_display})" if current_settings.database_url else "✗ Missing",
             },
             database_connected=database_connected,
             database_error=database_error,
             optional_services={
-                "LANGFUSE": is_langfuse_enabled(),  # True only if configured AND successfully initialized
-                "OBSIDIAN": bool(settings.obsidian_rest_token),
+                "LANGSMITH": is_langsmith_enabled(),
+                "OBSIDIAN": bool(current_settings.obsidian_rest_token),
             },
         )
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
-        """Process a chat query through the unified orchestrator."""
         if not database_connected:
             raise HTTPException(
                 status_code=503,
                 detail="Database is not connected. Please check your DATABASE_URL configuration."
             )
-        answer = await orchestrator.process_query(
+        
+        context_sources = None
+        if request.context_sources:
+            context_sources = [ContextSource(**cs) for cs in request.context_sources]
+        
+        result = await orchestrator.process_query(
             user_id=request.user_id,
             query=request.query,
-            preferred_model=request.model,
+            model=request.model,
+            context_sources=context_sources,
             db=db,
-            context_sources=request.context_sources,
         )
-        return ChatResponse(user_id=request.user_id, answer=answer)
-
-    # Mem0 proxy endpoints for Obsidian plugin integration
-    class AddMemoryRequest(BaseModel):
-        user_id: str
-        messages: str | list[dict[str, str]]
-        metadata: Optional[dict] = None
-
-    class SearchMemoryRequest(BaseModel):
-        user_id: str
-        query: str
-        limit: int = 5
+        return ChatResponse(user_id=request.user_id, answer=result.answer)
 
     @app.post("/mem0/add")
     async def add_memory(request: AddMemoryRequest) -> Dict[str, str]:
-        """Add a memory via Mem0 (proxy endpoint for Obsidian plugin)."""
-        from app.memory_mem0 import Mem0Wrapper
+        from app.memory_factory import get_memory_manager
         try:
-            mem0 = Mem0Wrapper()
-            await mem0.store(
+            memory = get_memory_manager()
+            await memory.store(
                 user_id=request.user_id,
                 text=request.messages if isinstance(request.messages, str) else str(request.messages),
                 metadata=request.metadata,
@@ -169,31 +231,30 @@ def create_app() -> FastAPI:
 
     @app.post("/mem0/search")
     async def search_memories(request: SearchMemoryRequest) -> Dict[str, Any]:
-        """Search memories via Mem0 (proxy endpoint for Obsidian plugin)."""
-        from app.memory_mem0 import Mem0Wrapper
+        from app.memory_factory import get_memory_manager
         try:
-            mem0 = Mem0Wrapper()
-            results = await mem0.search(
+            memory = get_memory_manager()
+            memories = await memory.search(
                 user_id=request.user_id,
                 query=request.query,
                 limit=request.limit,
             )
+            results = [{"text": m.text, "metadata": m.metadata, "score": m.score} for m in memories]
             return {"status": "success", "results": results}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/mem0/get_all/{user_id}")
     async def get_all_memories(user_id: str, limit: int = 100) -> Dict[str, Any]:
-        """Get all memories for a user via Mem0 (proxy endpoint for Obsidian plugin)."""
-        from app.memory_mem0 import Mem0Wrapper
+        from app.memory_factory import get_memory_manager
         try:
-            mem0 = Mem0Wrapper()
-            # Note: Mem0Wrapper doesn't have get_all, so we'll use search with a broad query
-            results = await mem0.search(
+            memory = get_memory_manager()
+            memories = await memory.search(
                 user_id=user_id,
                 query="",
                 limit=limit,
             )
+            results = [{"text": m.text, "metadata": m.metadata, "score": m.score} for m in memories]
             return {"status": "success", "results": results}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -202,5 +263,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-

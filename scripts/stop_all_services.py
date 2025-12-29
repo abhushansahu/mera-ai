@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Stop all self-hosted dependencies for Mera AI.
+"""Stop all services for Mera AI.
 
 This script stops:
-- Docker services (PostgreSQL, Langfuse)
-- Mem0 API Server
+- Docker services (PostgreSQL + Mera AI Application)
+
+All services are stopped via docker-compose.
 """
 
 import subprocess
@@ -66,48 +67,12 @@ def stop_docker_services():
         return False
 
 
-def stop_mem0_server():
-    """Stop Mem0 server by finding and killing the process."""
-    print(f"{Colors.BLUE}Stopping Mem0 server...{Colors.RESET}")
-    
-    try:
-        # Find Mem0 server process
-        result = subprocess.run(
-            ["pgrep", "-f", "start_mem0_server.py"],
-            capture_output=True,
-            text=True,
-        )
-        
-        if result.returncode == 0:
-            pids = result.stdout.strip().split("\n")
-            for pid in pids:
-                if pid:
-                    try:
-                        subprocess.run(["kill", pid], timeout=5)
-                        print(f"{Colors.GREEN}✓ Mem0 server stopped (PID: {pid}){Colors.RESET}")
-                    except Exception:
-                        pass
-            return True
-        else:
-            print(f"{Colors.YELLOW}No Mem0 server process found{Colors.RESET}")
-            return True
-    except FileNotFoundError:
-        # pgrep not available, try alternative method
-        print(f"{Colors.YELLOW}Could not find Mem0 process (pgrep not available){Colors.RESET}")
-        return True
-    except Exception as e:
-        print(f"{Colors.RED}Error stopping Mem0 server: {e}{Colors.RESET}")
-        return False
-
-
 def main():
     """Main entry point."""
     print(f"{Colors.BOLD}{Colors.BLUE}Mera AI - Stopping All Services{Colors.RESET}")
     print(f"{'=' * 50}\n")
 
-    success = True
-    success &= stop_mem0_server()
-    success &= stop_docker_services()
+    success = stop_docker_services()
 
     if success:
         print(f"\n{Colors.GREEN}{Colors.BOLD}All services stopped successfully!{Colors.RESET}")

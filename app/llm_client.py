@@ -68,32 +68,33 @@ async def call_openrouter_chat(
     _last_request_time[model] = time.time()
 
     last_exception = None
-    for attempt in range(max_retries):
-        try:
-            response = await client.post(url, headers=build_headers(key), json=payload)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code < 500:
+    try:
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(url, headers=build_headers(key), json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500:
+                    raise
+                last_exception = e
+                if attempt < max_retries - 1:
+                    delay = retry_delay * (2 ** attempt)
+                    await asyncio.sleep(delay)
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    delay = retry_delay * (2 ** attempt)
+                    await asyncio.sleep(delay)
+            except Exception as e:
                 raise
-            last_exception = e
-            if attempt < max_retries - 1:
-                delay = retry_delay * (2 ** attempt)
-                await asyncio.sleep(delay)
-        except (httpx.RequestError, httpx.TimeoutException) as e:
-            last_exception = e
-            if attempt < max_retries - 1:
-                delay = retry_delay * (2 ** attempt)
-                await asyncio.sleep(delay)
-        except Exception as e:
-            raise
+        
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("Failed to get response after retries")
     finally:
         if not use_shared and client is not None:
             await client.aclose()
-
-    if last_exception:
-        raise last_exception
-    raise RuntimeError("Failed to get response after retries")
 
 

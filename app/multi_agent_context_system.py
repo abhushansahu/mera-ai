@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 import httpx
-from langfuse.decorators import observe
+from app.infrastructure.observability import observe_langsmith
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 
@@ -46,7 +46,7 @@ class FileExplorerAgent:
 
     read_paths: Callable[[Iterable[str]], Awaitable[str]]
 
-    @observe(name="file_explorer_agent")
+    @observe_langsmith(name="file_explorer_agent")
     async def run(self, sources: List[ContextSource], query: str) -> str:
         paths = [s.path for s in sources if s.type in {ContextSourceType.FILE, ContextSourceType.DIRECTORY}]
         if not paths:
@@ -64,7 +64,7 @@ class LinkCrawlerAgent:
 
     fetch_urls: Callable[[Iterable[str]], Awaitable[str]]
 
-    @observe(name="link_crawler_agent")
+    @observe_langsmith(name="link_crawler_agent")
     async def run(self, sources: List[ContextSource], query: str) -> str:
         urls = [s.path for s in sources if s.type in {ContextSourceType.URL, ContextSourceType.API}]
         if not urls:
@@ -82,7 +82,7 @@ class DataAnalyzerAgent:
 
     analyze_databases: Callable[[Iterable[str], str], Awaitable[str]]
 
-    @observe(name="data_analyzer_agent")
+    @observe_langsmith(name="data_analyzer_agent")
     async def run(self, sources: List[ContextSource], query: str) -> str:
         dbs = [s.path for s in sources if s.type == ContextSourceType.DATABASE]
         if not dbs:
@@ -93,11 +93,11 @@ class DataAnalyzerAgent:
 
 @dataclass
 class MemoryRetrieverAgent:
-    """Retrieve additional memory/context from external systems (e.g. Mem0)."""
+    """Retrieve additional memory/context from memory store (Chroma)."""
 
     retrieve_memory: Callable[[str, str], Awaitable[str]]
 
-    @observe(name="memory_retriever_agent")
+    @observe_langsmith(name="memory_retriever_agent")
     async def run(self, sources: List[ContextSource], query: str) -> str:
         if not any(s.type == ContextSourceType.MEMORY for s in sources):
             return ""
@@ -117,7 +117,7 @@ class MemoryRetrieverAgent:
 class SynthesizerAgent:
     """Combine all exploration results into a single markdown document."""
 
-    @observe(name="synthesizer_agent")
+    @observe_langsmith(name="synthesizer_agent")
     def run(self, parts: List[str], query: str) -> str:
         non_empty = [p for p in parts if p.strip()]
         header = f"# Research Summary\n\nQuery: {query}\n\n"
@@ -175,8 +175,9 @@ class MultiAgentCoordinator:
         """Create a coordinator with real I/O for production use.
 
         Args:
-            mem0_wrapper: Optional Mem0Wrapper instance for memory retrieval.
+            mem0_wrapper: Optional memory manager instance for memory retrieval.
                           If None, memory agent will be a no-op.
+                          Note: Parameter name kept for backward compatibility.
         """
 
         async def read_paths(paths: Iterable[str]) -> str:
@@ -339,7 +340,7 @@ class MultiAgentCoordinator:
             synth_agent=SynthesizerAgent(),
         )
 
-    @observe(name="multi_agent_coordinator")
+    @observe_langsmith(name="multi_agent_coordinator")
     async def research_with_context(self, spec: ContextSpecification) -> str:
         """Run all applicable sub-agents in parallel and synthesize their findings."""
         sources = spec.sources

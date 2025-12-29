@@ -1,191 +1,305 @@
-## Unified AI Assistant – Implementation Workspace
+# Mera AI - Unified AI Assistant
 
-This repo contains a self-hosted unified AI assistant that:
+A self-hosted AI assistant that provides a single interface to chat with multiple AI models, with persistent memory and knowledge base integration.
 
-- Uses **OpenRouter** (and optionally local models) behind a single interface
-- Adds **persistent memory** via **Mem0** and an **Obsidian** vault
-- Orchestrates interactions through **LangGraph** with a **Research → Plan → Implement** workflow
-- Adds **observability** via **Langfuse**
+## What It Does
 
-## Setup
+- **Unified Interface**: Chat with any AI model through OpenRouter (GPT-4, Claude, and 280+ others)
+- **Persistent Memory**: Remembers conversations using Chroma vector database
+- **Knowledge Base**: Integrates with Obsidian vault using LlamaIndex for enhanced retrieval
+- **Observability**: Track usage, costs, and performance with LangSmith
+- **LangChain Orchestration**: Uses LangChain Agents and Chains for Research → Plan → Implement workflow
+- **Self-Hosted**: Everything runs locally except the AI model API calls
 
-This project uses **self-hosted services** for everything except OpenRouter and Obsidian. All services (PostgreSQL, Mem0, Langfuse) run locally via Docker Compose.
+## Quick Start
 
 ### Prerequisites
 
-- Docker and Docker Compose installed
-- Python 3.8+ 
-- OpenRouter API key (external service)
-- Obsidian installed locally (optional)
+- Docker and Docker Compose
+- OpenRouter API key ([get one here](https://openrouter.ai/))
 
-### Quick Start
+### Setup
 
-**Recommended: Use the unified startup script** (checks ports, starts everything):
+#### 1. Setup Environment
+
 ```bash
-# Using Python script directly
-python scripts/start_all_services.py
+# Copy environment file
+cp env.example .env
 
-# Or using convenience shell wrapper
+# Edit .env and add your OpenRouter API key
+# OPENROUTER_API_KEY=your_key_here
+```
+
+#### 2. Configure LangSmith (Optional)
+
+1. Sign up at https://smith.langchain.com/
+2. Create an API key in your dashboard
+3. Add to `.env`:
+   ```
+   LANGSMITH_API_KEY=your_key_here
+   LANGSMITH_PROJECT=mera-ai
+   ```
+
+#### 3. Start Everything
+
+**Option A: Using the convenience script (Recommended)**
+
+```bash
+# Single command to start everything
 ./start.sh
 ```
 
-This single command will:
-- Check for port conflicts (5432, 5433, 3000, 8001)
-- Start PostgreSQL (port 5432)
-- Start Langfuse DB (port 5433) and Langfuse UI (port 3000)
-- Start Mem0 API server (port 8001)
-- Wait for all services to be ready
-- Show service status and access URLs
+**Option B: Using docker-compose directly**
 
-**To stop all services:**
 ```bash
-# Using Python script directly
-python scripts/stop_all_services.py
-
-# Or using convenience shell wrapper
-./stop.sh
-```
-
-**Alternative: Manual startup** (if you prefer to start services separately):
-
-1. **Start Docker services** (PostgreSQL, Langfuse):
-   ```bash
-   docker-compose up -d
-   ```
-
-2. **Start Mem0 server** (in a separate terminal):
-   ```bash
-   python scripts/start_mem0_server.py
-   ```
-
-3. **Set up Langfuse** (first time only):
-   - Open http://localhost:3000 in your browser
-   - Create an account
-   - Go to Settings → API Keys
-   - Copy your `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`
-
-4. **Copy the example environment file** and fill in your configuration:
-   ```bash
-   cp env.example .env
-   # Then edit .env with your actual values
-   ```
-   
-   Required values in `.env`:
-   ```bash
-   OPENROUTER_API_KEY=your_openrouter_api_key_here
-   DATABASE_URL=postgresql+psycopg2://ai_user:ai_password@localhost:5432/ai_assistant
-   MEM0_HOST=http://localhost:8001
-   MEM0_API_KEY=local_mem0_api_key_change_in_production
-   LANGFUSE_HOST=http://localhost:3000
-   LANGFUSE_PUBLIC_KEY=your_langfuse_public_key
-   LANGFUSE_SECRET_KEY=your_langfuse_secret_key
-   ```
-
-5. **Create and activate virtual environment**:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-6. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-7. **Start the server**:
-   ```bash
-   python -m app.main
-   ```
-
-8. **Check server status**:
-   ```bash
-   curl http://localhost:8000/status
-   ```
-
-### Required Environment Variables
-
-**⚠️ The server will NOT start without these:**
-
-1. **OPENROUTER_API_KEY** - Your OpenRouter API key for LLM access (external service)
-   - Get one at: https://openrouter.ai/
-   
-2. **DATABASE_URL** - PostgreSQL database connection string (self-hosted)
-   - Default from docker-compose: `postgresql+psycopg2://ai_user:ai_password@localhost:5432/ai_assistant`
-
-3. **MEM0_HOST** and **MEM0_API_KEY** - Self-hosted Mem0 instance
-   - Default: `MEM0_HOST=http://localhost:8001`
-   - Default API key: `local_mem0_api_key_change_in_production` (change in production!)
-
-### Optional Environment Variables
-
-- `OPENROUTER_BASE_URL` - Default: `https://openrouter.ai/api/v1`
-- `DEFAULT_MODEL` - Default: `openai/gpt-4o-mini`
-- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` - For observability (self-hosted)
-  - Default: `LANGFUSE_HOST=http://localhost:3000`
-- `OBSIDIAN_REST_URL` - Default: `http://localhost:27124`
-- `OBSIDIAN_REST_TOKEN` - For Obsidian integration
-
-### Managing Self-Hosted Services
-
-**Start all services** (recommended):
-```bash
-# Option 1: Python script
-python scripts/start_all_services.py
-
-# Option 2: Shell wrapper (convenience)
-./start.sh
-```
-
-**Stop all services:**
-```bash
-# Option 1: Python script
-python scripts/stop_all_services.py
-
-# Option 2: Shell wrapper (convenience)
-./stop.sh
-```
-
-**Manual Docker management:**
-```bash
-# Start Docker services only
+# Build and start all services (PostgreSQL + Application)
 docker-compose up -d
 
-# Stop Docker services only
-docker-compose down
-
 # View logs
-docker-compose logs -f
+docker-compose logs -f app
 
-# Restart a specific service
-docker-compose restart langfuse
+# Check status
+docker-compose ps
 ```
 
-**Port Configuration:**
-The following ports are used (configured in `scripts/start_all_services.py`):
-- `5432` - PostgreSQL
-- `5433` - Langfuse Database
-- `3000` - Langfuse UI
-- `8001` - Mem0 API Server
+This starts:
+- PostgreSQL (database)
+- Mera AI Application (with all dependencies)
 
-**Access services:**
-- Langfuse UI: http://localhost:3000
-- Mem0 API: http://localhost:8001
-- Mem0 API Docs: http://localhost:8001/docs
-- PostgreSQL: `localhost:5432`
+The API will be available at http://localhost:8000
 
-**Note:** 
-- Mem0 server runs as a Python process (not in Docker) because it doesn't have an official Docker image
-- The unified startup script (`start_all_services.py`) checks for port conflicts before starting services
-- All services can be managed together using the unified scripts
+**Note:** If you're using Obsidian integration, you may need to mount your vault directory. Edit `docker-compose.yml` and uncomment the Obsidian vault volume mount, then set your vault path.
 
-6. Access API documentation:
-   - Swagger UI: http://localhost:8000/docs
-   - ReDoc: http://localhost:8000/redoc
+#### 4. Stop Services
 
-### Status Endpoint
+```bash
+# Using the convenience script
+./stop.sh
 
-The `/status` endpoint shows which API keys are configured and the health of required services. The server will fail to start if any required keys are missing.
+# Or using docker-compose directly
+docker-compose down
+```
 
-This file is intentionally minimal; see `docs/ARCHITECTURE.md` and `docs/QUICKSTART.md` (to be added as the implementation progresses) for deeper details.
+## Usage
 
+### Chat with AI
 
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "query": "Hello, remember my name is Alice"
+  }'
+```
+
+### Check Status
+
+```bash
+curl http://localhost:8000/status
+```
+
+### API Documentation
+
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
+## Architecture
+
+### LangChain Orchestration
+
+The system uses LangChain Agents and Chains to implement a Research → Plan → Implement (RPI) workflow:
+
+- **Research Phase**: LangChain Agent with retrieval tools (Chroma memory, Obsidian vault, multi-agent context)
+- **Plan Phase**: LLM planner that creates structured implementation plans
+- **Implement Phase**: Tool-calling agent that executes the plan step-by-step
+
+### Observability with LangSmith
+
+All operations are traced using LangSmith for:
+- Request/response tracking
+- Token usage and cost monitoring
+- Performance metrics
+- Debugging and optimization
+
+### LlamaIndex Integration
+
+Obsidian vault is indexed using LlamaIndex with Chroma as the vector store:
+- Structured document indexing
+- Enhanced retrieval with metadata filtering
+- Incremental updates support
+
+## Key Features
+
+### Memory Management
+
+The assistant remembers past conversations and uses that context in future interactions.
+
+```bash
+# Add a memory
+curl -X POST http://localhost:8000/mem0/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "messages": "I love Python programming"
+  }'
+
+# Search memories
+curl -X POST http://localhost:8000/mem0/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "query": "What do I like?"
+  }'
+```
+
+### Obsidian Integration
+
+Connect your Obsidian vault to provide context from your notes. The system uses LlamaIndex to index your vault for enhanced retrieval.
+
+**Setup:**
+
+1. Set `OBSIDIAN_VAULT_PATH` in `.env` to your vault directory
+
+2. Edit `docker-compose.yml` and uncomment the Obsidian vault volume mount
+   - Set the path to your vault: `- /path/to/your/obsidian/vault:/app/obsidian_vault:ro`
+   - Update `OBSIDIAN_VAULT_PATH` in `.env` to `/app/obsidian_vault`
+
+3. Rebuild the container: `docker-compose up -d --build app`
+
+4. Build the index: `docker-compose exec app python -m app.infrastructure.indexing.index_manager build`
+
+5. The system will automatically use the indexed vault for retrieval
+
+**Index Management:**
+
+- Build: `docker-compose exec app python -m app.infrastructure.indexing.index_manager build`
+- Update: `docker-compose exec app python -m app.infrastructure.indexing.index_manager update`
+- Refresh: `docker-compose exec app python -m app.infrastructure.indexing.index_manager refresh`
+
+Configure in `.env`:
+
+```
+OBSIDIAN_REST_URL=http://localhost:27124
+OBSIDIAN_REST_TOKEN=your_token_here
+```
+
+### Multi-Model Support
+
+Switch between different AI models:
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "query": "Explain quantum computing",
+    "model": "openai/gpt-4o-mini"
+  }'
+```
+
+## Environment Variables
+
+**Required:**
+- `OPENROUTER_API_KEY` - Your OpenRouter API key
+- `DATABASE_URL` - PostgreSQL connection (default: `postgresql+psycopg2://ai_user:ai_password@localhost:5432/ai_assistant`)
+
+**Optional:**
+- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` - For observability
+- `OBSIDIAN_REST_URL` / `OBSIDIAN_REST_TOKEN` - For Obsidian integration
+- `CHROMA_PERSIST_DIR` - Memory storage location (default: `./chroma_db`)
+
+## Managing Services
+
+**Using convenience scripts:**
+
+```bash
+# Start all services (PostgreSQL + Application)
+./start.sh
+
+# Stop all services
+./stop.sh
+```
+
+**Using docker-compose directly:**
+
+```bash
+# Start all services (PostgreSQL + Application)
+docker-compose up -d
+
+# Stop all services
+docker-compose down
+
+# View logs (all services)
+docker-compose logs -f
+
+# View logs (specific service)
+docker-compose logs -f app
+docker-compose logs -f postgres
+
+# Check service status
+docker-compose ps
+
+# Restart a specific service
+docker-compose restart app
+
+# Rebuild and restart (after code changes)
+docker-compose up -d --build app
+```
+
+## Obsidian Plugin
+
+There's an Obsidian plugin available for direct integration. See [obsidian-plugin/README.md](obsidian-plugin/README.md) for details.
+
+## Troubleshooting
+
+### Services Not Starting
+
+```bash
+# Check if ports are in use
+lsof -i :8000
+lsof -i :3000
+lsof -i :5432
+
+# Check Docker containers
+docker-compose ps
+docker-compose logs
+```
+
+### Database Connection Issues
+
+```bash
+# Verify PostgreSQL is running
+docker-compose ps postgres
+
+# Test connection
+docker exec -it mera-ai-postgres psql -U ai_user -d ai_assistant -c "SELECT 1;"
+```
+
+### API Not Responding
+
+1. Check the application container is running: `docker-compose ps app`
+2. View application logs: `docker-compose logs app`
+3. Verify environment variables in `.env`
+4. Ensure all Docker services are healthy: `docker-compose ps`
+5. Restart the application: `docker-compose restart app`
+6. Rebuild if needed: `docker-compose up -d --build app`
+
+## Project Structure
+
+```
+mera-ai/
+├── app/              # Main application code
+│   ├── api/          # API routes
+│   ├── core/         # Core logic
+│   ├── adapters/     # External service adapters
+│   └── infrastructure/ # Infrastructure setup
+├── obsidian-plugin/  # Obsidian integration plugin
+├── scripts/          # Utility scripts
+├── tests/            # Test files
+└── docker-compose.yml # Service configuration
+```
+
+## License
+
+MIT

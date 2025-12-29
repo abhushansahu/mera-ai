@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Start all self-hosted dependencies for Mera AI.
+"""Start all services for Mera AI.
 
 This script starts:
-- PostgreSQL (port 5432)
-- Langfuse DB (port 5433)
-- Langfuse UI (port 3000)
-- Mem0 API Server (port 8001)
+- PostgreSQL (port 5432) - Main database
+- Mera AI Application (port 8000) - Main API server
 
-It checks for port conflicts and manages all services together.
+All services run in Docker containers via docker-compose.
+It checks for prerequisites, port conflicts, and manages all services together.
 """
 
 import os
@@ -19,13 +18,15 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# Check if running in interactive mode
+def is_interactive() -> bool:
+    """Check if stdin is a TTY (interactive mode)."""
+    return sys.stdin.isatty()
+
 # Port configuration
 PORTS = {
     "postgres": 5432,
-    "clickhouse_http": 8123,
-    "clickhouse_native": 9000,
-    "langfuse": 3000,
-    "mem0": 8001,
+    "app": 8000,
 }
 
 # Colors for terminal output
@@ -55,6 +56,29 @@ def check_all_ports() -> Tuple[bool, List[str]]:
         if check_port(port):
             conflicts.append(f"{service} (port {port})")
     return len(conflicts) == 0, conflicts
+
+
+def check_docker_services_running() -> bool:
+    """Check if Docker services are already running."""
+    project_root = Path(__file__).parent.parent
+    docker_compose_file = project_root / "docker-compose.yml"
+    docker_compose_cmd = get_docker_compose_cmd()
+    
+    try:
+        result = subprocess.run(
+            docker_compose_cmd + ["-f", str(docker_compose_file), "ps", "--format", "json"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Check if any services are running
+            lines = [line for line in result.stdout.strip().split('\n') if line.strip()]
+            return len(lines) > 0
+        return False
+    except Exception:
+        return False
 
 
 def check_docker() -> bool:
@@ -113,6 +137,35 @@ def get_docker_compose_cmd() -> List[str]:
     return ["docker-compose"]
 
 
+def check_env_file() -> bool:
+    """Check if .env file exists."""
+    project_root = Path(__file__).parent.parent
+    env_file = project_root / ".env"
+    env_example = project_root / "env.example"
+    
+    if not env_file.exists():
+        print(f"{Colors.YELLOW}Warning: .env file not found.{Colors.RESET}")
+        if env_example.exists():
+            print(f"{Colors.BLUE}Creating .env from env.example...{Colors.RESET}")
+            try:
+                import shutil
+                shutil.copy(env_example, env_file)
+                print(f"{Colors.YELLOW}Please edit .env and add your OPENROUTER_API_KEY before continuing.{Colors.RESET}")
+                if is_interactive():
+                    response = input("Continue anyway? (y/N): ")
+                    if response.lower() != "y":
+                        return False
+                else:
+                    print(f"{Colors.YELLOW}Non-interactive mode: Continuing, but you must set OPENROUTER_API_KEY in .env{Colors.RESET}")
+            except Exception as e:
+                print(f"{Colors.RED}Error creating .env: {e}{Colors.RESET}")
+                return False
+        else:
+            print(f"{Colors.RED}Error: .env file not found and env.example is missing.{Colors.RESET}")
+            return False
+    return True
+
+
 def start_docker_services() -> Optional[subprocess.Popen]:
     """Start Docker services using docker-compose."""
     project_root = Path(__file__).parent.parent
@@ -123,16 +176,16 @@ def start_docker_services() -> Optional[subprocess.Popen]:
         return None
 
     docker_compose_cmd = get_docker_compose_cmd()
-    cmd = docker_compose_cmd + ["-f", str(docker_compose_file), "up", "-d"]
+    cmd = docker_compose_cmd + ["-f", str(docker_compose_file), "up", "-d", "--build"]
 
-    print(f"{Colors.BLUE}Starting Docker services...{Colors.RESET}")
+    print(f"{Colors.BLUE}Starting Docker services (this may take a minute on first run)...{Colors.RESET}")
     try:
         result = subprocess.run(
             cmd,
             cwd=project_root,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=300,  # Increased timeout for building
         )
         if result.returncode != 0:
             print(f"{Colors.RED}Error starting Docker services:{Colors.RESET}")
@@ -148,55 +201,9 @@ def start_docker_services() -> Optional[subprocess.Popen]:
         return None
 
 
-def start_mem0_server() -> Optional[subprocess.Popen]:
-    """Start Mem0 API server."""
-    script_path = Path(__file__).parent / "start_mem0_server.py"
-
-    if not script_path.exists():
-        print(f"{Colors.RED}Error: start_mem0_server.py not found at {script_path}{Colors.RESET}")
-        return None
-
-    print(f"{Colors.BLUE}Starting Mem0 server...{Colors.RESET}")
-    try:
-        # Try to use venv Python if available
-        project_root = Path(__file__).parent.parent
-        venv_python = project_root / "venv" / "bin" / "python"
-        if venv_python.exists():
-            python_executable = str(venv_python)
-        else:
-            python_executable = sys.executable
-
-        # Set environment variables for Mem0
-        env = os.environ.copy()
-        env["MEM0_HOST"] = "0.0.0.0"
-        env["MEM0_PORT"] = str(PORTS["mem0"])
-
-        process = subprocess.Popen(
-            [python_executable, str(script_path)],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-
-        # Wait a moment to check if it started successfully
-        time.sleep(2)
-        if process.poll() is not None:
-            # Process exited, read output
-            output, _ = process.communicate()
-            print(f"{Colors.RED}Error starting Mem0 server:{Colors.RESET}")
-            print(output)
-            return None
-
-        print(f"{Colors.GREEN}✓ Mem0 server started (PID: {process.pid}){Colors.RESET}")
-        return process
-    except Exception as e:
-        print(f"{Colors.RED}Error starting Mem0 server: {e}{Colors.RESET}")
-        return None
 
 
-def wait_for_service(name: str, port: int, url: Optional[str] = None, max_wait: int = 60) -> bool:
+def wait_for_service(name: str, port: int, url: Optional[str] = None, max_wait: int = 120) -> bool:
     """Wait for a service to become available."""
     print(f"{Colors.BLUE}Waiting for {name} to be ready...{Colors.RESET}", end="", flush=True)
     start_time = time.time()
@@ -219,7 +226,7 @@ def wait_for_service(name: str, port: int, url: Optional[str] = None, max_wait: 
                 print(f" {Colors.GREEN}✓{Colors.RESET}")
                 return True
 
-        time.sleep(1)
+        time.sleep(2)
         print(".", end="", flush=True)
 
     print(f" {Colors.RED}✗ (timeout){Colors.RESET}")
@@ -250,24 +257,11 @@ def print_status():
     except Exception:
         pass
 
-    # Check Mem0
-    if check_port(PORTS["mem0"]):
-        print(f"{Colors.GREEN}✓ Mem0: Running on port {PORTS['mem0']}{Colors.RESET}")
-    else:
-        print(f"{Colors.RED}✗ Mem0: Not running{Colors.RESET}")
-
-    # Check ClickHouse
-    if check_port(PORTS["clickhouse_http"]):
-        print(f"{Colors.GREEN}✓ ClickHouse: Running on port {PORTS['clickhouse_http']}{Colors.RESET}")
-    else:
-        print(f"{Colors.RED}✗ ClickHouse: Not running{Colors.RESET}")
-
     print(f"\n{Colors.BOLD}Access URLs:{Colors.RESET}")
-    print(f"  - Langfuse UI: {Colors.BLUE}http://localhost:{PORTS['langfuse']}{Colors.RESET}")
-    print(f"  - Mem0 API: {Colors.BLUE}http://localhost:{PORTS['mem0']}{Colors.RESET}")
-    print(f"  - Mem0 Docs: {Colors.BLUE}http://localhost:{PORTS['mem0']}/docs{Colors.RESET}")
     print(f"  - PostgreSQL: {Colors.BLUE}localhost:{PORTS['postgres']}{Colors.RESET}")
-    print(f"  - ClickHouse HTTP: {Colors.BLUE}http://localhost:{PORTS['clickhouse_http']}{Colors.RESET}")
+    print(f"  - Mera AI API: {Colors.BLUE}http://localhost:8000{Colors.RESET}")
+    print(f"  - API Documentation: {Colors.BLUE}http://localhost:8000/docs{Colors.RESET}")
+    print(f"  - API Status: {Colors.BLUE}http://localhost:8000/status{Colors.RESET}")
 
 
 def cleanup(processes: List[subprocess.Popen]):
@@ -307,6 +301,13 @@ def main():
         print(f"{Colors.RED}Error: docker-compose is not available.{Colors.RESET}")
         sys.exit(1)
 
+    # Check if services are already running
+    if check_docker_services_running():
+        print(f"{Colors.GREEN}Docker services are already running.{Colors.RESET}")
+        print_status()
+        print(f"\n{Colors.BLUE}To restart services, run: {Colors.RESET}./stop.sh && ./start.sh")
+        sys.exit(0)
+    
     # Check for port conflicts
     ports_ok, conflicts = check_all_ports()
     if not ports_ok:
@@ -314,45 +315,40 @@ def main():
         for conflict in conflicts:
             print(f"  - {conflict}")
         print(f"\n{Colors.YELLOW}This might be okay if services are already running.{Colors.RESET}")
-        response = input("Continue anyway? (y/N): ")
-        if response.lower() != "y":
-            print("Aborted.")
-            sys.exit(1)
+        
+        if is_interactive():
+            response = input("Continue anyway? (y/N): ")
+            if response.lower() != "y":
+                print("Aborted.")
+                sys.exit(1)
+        else:
+            print(f"{Colors.YELLOW}Non-interactive mode: Continuing anyway...{Colors.RESET}")
+
+    # Check for .env file
+    if not check_env_file():
+        print(f"{Colors.RED}Aborted. Please create .env file with required configuration.{Colors.RESET}")
+        sys.exit(1)
 
     # Start services
     processes: List[subprocess.Popen] = []
 
-    # Start Docker services (includes Mem0 now)
+    # Start Docker services (includes PostgreSQL + App)
     start_docker_services()
 
     # Wait for Docker services to be ready
-    time.sleep(3)
-
-    # Wait for services to be ready
     print(f"\n{Colors.BLUE}Waiting for services to be ready...{Colors.RESET}")
     wait_for_service("PostgreSQL", PORTS["postgres"])
-    wait_for_service(
-        "ClickHouse",
-        PORTS["clickhouse_http"],
-        url=f"http://localhost:{PORTS['clickhouse_http']}/ping",
-    )
-    wait_for_service(
-        "Mem0",
-        PORTS["mem0"],
-        url=f"http://localhost:{PORTS['mem0']}/health",
-    )
-    wait_for_service(
-        "Langfuse",
-        PORTS["langfuse"],
-        url=f"http://localhost:{PORTS['langfuse']}/api/public/health",
-        max_wait=120,  # Langfuse can take longer to start
-    )
+    wait_for_service("Mera AI Application", PORTS["app"], url="http://localhost:8000/status")
 
     # Print status
     print_status()
 
-    print(f"\n{Colors.GREEN}{Colors.BOLD}All services are running!{Colors.RESET}")
-    print(f"{Colors.YELLOW}Press Ctrl+C to stop all services.{Colors.RESET}\n")
+    print(f"\n{Colors.GREEN}{Colors.BOLD}✓ All services are running!{Colors.RESET}")
+    print(f"\n{Colors.BOLD}Next steps:{Colors.RESET}")
+    print(f"  - Test the API: {Colors.BLUE}curl http://localhost:8000/status{Colors.RESET}")
+    print(f"  - View API docs: {Colors.BLUE}http://localhost:8000/docs{Colors.RESET}")
+    print(f"  - View logs: {Colors.BLUE}docker-compose logs -f app{Colors.RESET}")
+    print(f"\n{Colors.YELLOW}Press Ctrl+C to stop all services.{Colors.RESET}\n")
 
     # Set up signal handlers for graceful shutdown
     def signal_handler(sig, frame):

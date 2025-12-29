@@ -2,11 +2,11 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from app.llm_client import call_openrouter_chat
-from app.memory_mem0 import Mem0Wrapper
+from app.memory_factory import MemoryManager
 
 
 async def compact_memories(
-    mem0: Mem0Wrapper,
+    memory: MemoryManager,
     user_id: str,
     model: str,
     now: datetime | None = None,
@@ -14,9 +14,9 @@ async def compact_memories(
     """Compact a user's recent memories into a single snapshot.
 
     This is an async function that returns the snapshot and also stores it back
-    into Mem0 for future retrieval.
+    into the memory store for future retrieval.
     """
-    raw: List[Dict[str, Any]] = await mem0.search(user_id=user_id, query="*", limit=50)
+    raw: List[Dict[str, Any]] = await memory.search(user_id=user_id, query="*", limit=50)
     if not raw:
         return {"snapshot": "", "source_count": 0}
 
@@ -36,7 +36,7 @@ async def compact_memories(
     timestamp = (now or datetime.utcnow()).isoformat()
     snapshot_text = f"[Snapshot at {timestamp}]\n\n{summary}"
 
-    await mem0.store(
+    await memory.store(
         user_id=user_id,
         text=snapshot_text,
         metadata={"type": "compacted_snapshot", "source_count": len(raw)},

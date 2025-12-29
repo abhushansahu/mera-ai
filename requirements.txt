@@ -1,18 +1,5 @@
-fastapi
-uvicorn[standard]
-sqlalchemy
-asyncpg
-psycopg2-binary
-python-dotenv
-httpx
-langgraph
-langchain-core
-langchain-openai
-mem0ai
-tiktoken
-apscheduler
-pytest
-langfuse
-aiocache
+# Base requirements - see requirements-base.txt for production dependencies
+# This file is kept for backward compatibility
+# For new installations, use: pip install -r requirements-base.txt
 
-
+-r requirements-base.txt
