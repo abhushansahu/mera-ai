@@ -2,9 +2,11 @@
 """Stop all services for Mera AI.
 
 This script stops:
+- Frontend UI (Next.js process)
 - Docker services (PostgreSQL + Mera AI Application)
 
-All services are stopped via docker-compose.
+Frontend is stopped by killing the process on port 3000.
+Docker services are stopped via docker-compose.
 """
 
 import subprocess
@@ -32,6 +34,44 @@ def get_docker_compose_cmd():
     if result.returncode == 0:
         return ["docker", "compose"]
     return ["docker-compose"]
+
+
+def stop_frontend():
+    """Stop frontend process by finding and killing Node.js processes on port 3000."""
+    try:
+        # Try to find process using port 3000 with lsof (works on macOS and Linux)
+        result = subprocess.run(
+            ["lsof", "-ti:3000"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        subprocess.run(["kill", pid], timeout=5)
+                    except Exception:
+                        pass
+            return True
+    except FileNotFoundError:
+        # lsof not available, try alternative method
+        try:
+            # Try using pkill for Next.js processes
+            subprocess.run(["pkill", "-f", "next dev"], timeout=5, capture_output=True)
+            return True
+        except Exception:
+            pass
+    except Exception:
+        # If lsof fails, try pkill as fallback
+        try:
+            subprocess.run(["pkill", "-f", "next dev"], timeout=5, capture_output=True)
+            return True
+        except Exception:
+            pass
+    return False
 
 
 def stop_docker_services():
@@ -72,6 +112,14 @@ def main():
     print(f"{Colors.BOLD}{Colors.BLUE}Mera AI - Stopping All Services{Colors.RESET}")
     print(f"{'=' * 50}\n")
 
+    # Stop frontend
+    print(f"{Colors.BLUE}Stopping frontend...{Colors.RESET}")
+    if stop_frontend():
+        print(f"{Colors.GREEN}✓ Frontend stopped{Colors.RESET}")
+    else:
+        print(f"{Colors.YELLOW}Frontend may not have been running{Colors.RESET}")
+
+    # Stop Docker services
     success = stop_docker_services()
 
     if success:
