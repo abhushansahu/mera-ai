@@ -20,6 +20,10 @@ from app.infrastructure.observability import (
 )
 from app.orchestrators import LangChainUnifiedOrchestrator
 from app.adapters.openrouter.llm import _close_async_client
+from app.spaces.space_manager import SpaceManager
+from app.spaces.space_model import SpaceConfig, SpaceStatus, SpaceUsage
+# Import models to ensure they're registered with SQLAlchemy Base
+from app.models import SpaceRecord, SpaceUsageRecord  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,7 @@ class ChatRequest(BaseModel):
     query: str
     model: str | None = None
     context_sources: Optional[List[Dict[str, str]]] = None
+    space_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -54,6 +59,34 @@ class SearchMemoryRequest(BaseModel):
     user_id: str
     query: str
     limit: int = 5
+
+
+class CreateSpaceRequest(BaseModel):
+    space_id: str
+    name: str
+    owner_id: str
+    monthly_token_budget: int = 1_000_000
+    monthly_api_calls: int = 10_000
+    preferred_model: str = "openai/gpt-4o-mini"
+
+
+class SpaceResponse(BaseModel):
+    space_id: str
+    name: str
+    owner_id: str
+    status: str
+    monthly_token_budget: int
+    monthly_api_calls: int
+    preferred_model: str
+
+
+class SpaceUsageResponse(BaseModel):
+    space_id: str
+    month: str
+    tokens_used: int
+    api_calls_used: int
+    cost_usd: float
+    tokens_remaining: int
 
 
 def create_app() -> FastAPI:
@@ -206,12 +239,22 @@ def create_app() -> FastAPI:
         if request.context_sources:
             context_sources = [ContextSource(**cs) for cs in request.context_sources]
         
+        # Initialize space manager if space_id provided
+        space_manager = None
+        if request.space_id:
+            space_manager = SpaceManager(db)
+            try:
+                await space_manager.switch_space(request.space_id)
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+        
         result = await orchestrator.process_query(
             user_id=request.user_id,
             query=request.query,
             model=request.model,
             context_sources=context_sources,
             db=db,
+            space_manager=space_manager,
         )
         return ChatResponse(user_id=request.user_id, answer=result.answer)
 
@@ -257,6 +300,197 @@ def create_app() -> FastAPI:
             results = [{"text": m.text, "metadata": m.metadata, "score": m.score} for m in memories]
             return {"status": "success", "results": results}
         except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Space management endpoints
+    @app.post("/spaces/create", response_model=SpaceResponse)
+    async def create_space(
+        request: CreateSpaceRequest,
+        db: AsyncSession = Depends(get_db),
+    ) -> SpaceResponse:
+        """Create a new space."""
+        if not database_connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Database is not connected. Please check your DATABASE_URL configuration."
+            )
+        
+        space_manager = SpaceManager(db)
+        config = SpaceConfig(
+            space_id=request.space_id,
+            name=request.name,
+            owner_id=request.owner_id,
+            monthly_token_budget=request.monthly_token_budget,
+            monthly_api_calls=request.monthly_api_calls,
+            preferred_model=request.preferred_model,
+        )
+        
+        try:
+            created_config = await space_manager.create_space(config)
+            return SpaceResponse(
+                space_id=created_config.space_id,
+                name=created_config.name,
+                owner_id=created_config.owner_id,
+                status=created_config.status.value,
+                monthly_token_budget=created_config.monthly_token_budget,
+                monthly_api_calls=created_config.monthly_api_calls,
+                preferred_model=created_config.preferred_model,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error creating space: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/spaces/list", response_model=List[SpaceResponse])
+    async def list_spaces(
+        owner_id: str,
+        db: AsyncSession = Depends(get_db),
+    ) -> List[SpaceResponse]:
+        """List all spaces for an owner."""
+        if not database_connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Database is not connected. Please check your DATABASE_URL configuration."
+            )
+        
+        space_manager = SpaceManager(db)
+        try:
+            spaces = await space_manager.list_spaces(owner_id)
+            return [
+                SpaceResponse(
+                    space_id=space.space_id,
+                    name=space.name,
+                    owner_id=space.owner_id,
+                    status=space.status.value,
+                    monthly_token_budget=space.monthly_token_budget,
+                    monthly_api_calls=space.monthly_api_calls,
+                    preferred_model=space.preferred_model,
+                )
+                for space in spaces
+            ]
+        except Exception as e:
+            logger.error(f"Error listing spaces: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/spaces/switch", response_model=SpaceResponse)
+    async def switch_space(
+        space_id: str,
+        db: AsyncSession = Depends(get_db),
+    ) -> SpaceResponse:
+        """Switch to a different space."""
+        if not database_connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Database is not connected. Please check your DATABASE_URL configuration."
+            )
+        
+        space_manager = SpaceManager(db)
+        try:
+            config = await space_manager.switch_space(space_id)
+            return SpaceResponse(
+                space_id=config.space_id,
+                name=config.name,
+                owner_id=config.owner_id,
+                status=config.status.value,
+                monthly_token_budget=config.monthly_token_budget,
+                monthly_api_calls=config.monthly_api_calls,
+                preferred_model=config.preferred_model,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error switching space: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/spaces/current", response_model=SpaceResponse)
+    async def get_current_space(
+        db: AsyncSession = Depends(get_db),
+    ) -> SpaceResponse:
+        """Get current space."""
+        if not database_connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Database is not connected. Please check your DATABASE_URL configuration."
+            )
+        
+        space_manager = SpaceManager(db)
+        try:
+            config = space_manager.get_current_space()
+            return SpaceResponse(
+                space_id=config.space_id,
+                name=config.name,
+                owner_id=config.owner_id,
+                status=config.status.value,
+                monthly_token_budget=config.monthly_token_budget,
+                monthly_api_calls=config.monthly_api_calls,
+                preferred_model=config.preferred_model,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error getting current space: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/spaces/{space_id}/usage", response_model=SpaceUsageResponse)
+    async def get_space_usage(
+        space_id: str,
+        month: Optional[str] = None,
+        db: AsyncSession = Depends(get_db),
+    ) -> SpaceUsageResponse:
+        """Get space usage for a specific month."""
+        if not database_connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Database is not connected. Please check your DATABASE_URL configuration."
+            )
+        
+        space_manager = SpaceManager(db)
+        try:
+            usage = await space_manager.get_space_usage(space_id, month)
+            # Get space config to calculate remaining
+            await space_manager.switch_space(space_id)
+            config = space_manager.get_current_space()
+            remaining = usage.get_budget_remaining(config)
+            
+            return SpaceUsageResponse(
+                space_id=usage.space_id,
+                month=usage.month,
+                tokens_used=usage.tokens_used,
+                api_calls_used=usage.api_calls_used,
+                cost_usd=usage.cost_usd,
+                tokens_remaining=remaining,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error getting space usage: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.delete("/spaces/{space_id}")
+    async def delete_space(
+        space_id: str,
+        permanently: bool = False,
+        db: AsyncSession = Depends(get_db),
+    ) -> Dict[str, str]:
+        """Delete or archive a space."""
+        if not database_connected:
+            raise HTTPException(
+                status_code=503,
+                detail="Database is not connected. Please check your DATABASE_URL configuration."
+            )
+        
+        space_manager = SpaceManager(db)
+        try:
+            await space_manager.delete_space(space_id, permanently=permanently)
+            return {
+                "status": "success",
+                "message": f"Space {'deleted' if permanently else 'archived'}: {space_id}",
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error deleting space: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     return app

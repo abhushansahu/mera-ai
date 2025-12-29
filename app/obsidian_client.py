@@ -18,11 +18,18 @@ class ObsidianClient:
 
     base_url: str
     token: Optional[str]
+    vault_path: Optional[str] = None
     _client: Optional[httpx.AsyncClient] = None
 
-    def __init__(self, base_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        token: Optional[str] = None,
+        vault_path: Optional[str] = None,
+    ) -> None:
         self.base_url = base_url or settings.obsidian_rest_url or "http://localhost:27124"
         self.token = token or settings.obsidian_rest_token
+        self.vault_path = vault_path or settings.obsidian_vault_path
         self._client = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -63,10 +70,14 @@ class ObsidianClient:
 
         try:
             client = await self._get_client()
+            payload = {"path": filename, "content": content}
+            # Include vault_path if specified (some Obsidian REST API plugins support this)
+            if self.vault_path:
+                payload["vault"] = self.vault_path
             response = await client.post(
                 f"{self.base_url}/vault/create",
                 headers=headers,
-                json={"path": filename, "content": content},
+                json=payload,
             )
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
@@ -91,10 +102,14 @@ class ObsidianClient:
 
         try:
             client = await self._get_client()
+            payload = {"query": query, "limit": limit}
+            # Include vault_path if specified (some Obsidian REST API plugins support this)
+            if self.vault_path:
+                payload["vault"] = self.vault_path
             response = await client.post(
                 f"{self.base_url}/vault/search",
                 headers=headers,
-                json={"query": query, "limit": limit},
+                json=payload,
             )
             response.raise_for_status()
             results = response.json()
