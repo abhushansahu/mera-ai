@@ -1,13 +1,18 @@
-"""LangSmith client for observability and tracing."""
+"""Observability: LangSmith tracing, logging, and metrics."""
 
+import logging
 import os
+import sys
 from functools import wraps
-from typing import Any, Callable, Optional
+from time import time
+from typing import Any, Callable, Dict, Optional
 
 from langsmith import Client, traceable
+from pythonjsonlogger import jsonlogger
 
 from app.infrastructure.config.settings import get_settings
 
+# LangSmith
 _langsmith_client: Optional[Client] = None
 _langsmith_initialization_error: Optional[str] = None
 
@@ -48,8 +53,6 @@ def get_langsmith_client() -> Optional[Client]:
         return _langsmith_client
     except Exception as e:
         _langsmith_initialization_error = f"LangSmith initialization failed: {e}"
-        import logging
-
         logger = logging.getLogger(__name__)
         logger.warning(f"LangSmith observability disabled due to initialization error: {e}")
         return None
@@ -70,7 +73,7 @@ def get_langsmith_error() -> Optional[str]:
 
 
 def observe_langsmith(name: Optional[str] = None, **kwargs: Any) -> Callable:
-    """Decorator for LangSmith tracing, similar to Langfuse @observe.
+    """Decorator for LangSmith tracing.
 
     Usage:
         @observe_langsmith(name="my_function")
@@ -84,18 +87,80 @@ def observe_langsmith(name: Optional[str] = None, **kwargs: Any) -> Callable:
     Returns:
         Decorator function
     """
-
     def decorator(func: Callable) -> Callable:
-        # Configure LangSmith environment
         _configure_langsmith_env()
-
-        # Determine trace name
         trace_name = name or func.__name__
-
-        # Use traceable decorator directly
-        # traceable handles both sync and async functions
         traced_func = traceable(name=trace_name, **kwargs)(func)
-
         return traced_func
+    return decorator
 
+# Logging
+def setup_logging(level: str = "INFO") -> None:
+    """Setup JSON logging."""
+    log_handler = logging.StreamHandler(sys.stdout)
+    formatter = jsonlogger.JsonFormatter(
+        "%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    log_handler.setFormatter(formatter)
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper()))
+    root_logger.addHandler(log_handler)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger instance."""
+    return logging.getLogger(name)
+
+# Metrics
+_metrics: Dict[str, list] = {}
+
+
+def record_metric(name: str, value: float, tags: Optional[Dict[str, str]] = None) -> None:
+    """Record a metric."""
+    if name not in _metrics:
+        _metrics[name] = []
+    _metrics[name].append({"value": value, "tags": tags or {}, "timestamp": time()})
+
+
+def get_metrics(name: Optional[str] = None) -> Dict:
+    """Get metrics."""
+    if name:
+        return {name: _metrics.get(name, [])}
+    return _metrics
+
+
+def clear_metrics() -> None:
+    """Clear all metrics."""
+    _metrics.clear()
+
+
+def track_latency(metric_name: str):
+    """Decorator to track function latency."""
+    def decorator(func):
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            start = time()
+            try:
+                result = await func(*args, **kwargs)
+                return result
+            finally:
+                latency = time() - start
+                record_metric(f"{metric_name}.latency", latency)
+        
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            start = time()
+            try:
+                result = func(*args, **kwargs)
+                return result
+            finally:
+                latency = time() - start
+                record_metric(f"{metric_name}.latency", latency)
+        
+        import asyncio
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
     return decorator

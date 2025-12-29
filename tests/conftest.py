@@ -5,7 +5,7 @@ from typing import AsyncGenerator
 
 from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.openrouter import OpenRouterLLMAdapter
-from app.domain.workflow import RPIWorkflow
+# RPIWorkflow removed - production uses LangChain version
 from app.infrastructure.config.settings import Settings
 
 
@@ -34,9 +34,3 @@ async def memory_adapter() -> AsyncGenerator[ChromaMemoryAdapter, None]:
 def llm_adapter() -> OpenRouterLLMAdapter:
     """Create a test LLM adapter (mocked in tests)."""
     return OpenRouterLLMAdapter(api_key="test_key")
-
-
-@pytest.fixture
-def workflow(llm_adapter, memory_adapter) -> RPIWorkflow:
-    """Create a test workflow."""
-    return RPIWorkflow(llm=llm_adapter, memory=memory_adapter)

@@ -1,11 +1,10 @@
-"""Tests to validate LangChainUnifiedOrchestrator matches DomainOrchestrator behavior."""
+"""Tests to validate LangChainUnifiedOrchestrator behavior."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app._archived.orchestrator_domain import DomainOrchestrator
 from app.orchestrators import LangChainUnifiedOrchestrator
-from app.core.types import ContextSource
+from app.core import ContextSource
 
 
 @pytest.fixture
@@ -18,69 +17,46 @@ def mock_db():
 
 
 @pytest.fixture
-def domain_orchestrator():
-    """Create a DomainOrchestrator instance (old implementation)."""
-    return DomainOrchestrator()
-
-
-@pytest.fixture
 def langchain_unified_orchestrator():
-    """Create a LangChainUnifiedOrchestrator instance (new implementation)."""
+    """Create a LangChainUnifiedOrchestrator instance."""
     return LangChainUnifiedOrchestrator()
 
 
 @pytest.mark.asyncio
-async def test_both_orchestrators_accept_same_inputs(
-    domain_orchestrator: DomainOrchestrator,
+async def test_orchestrator_accepts_inputs(
     langchain_unified_orchestrator: LangChainUnifiedOrchestrator,
     mock_db,
 ):
-    """Test that both orchestrators accept the same input format."""
+    """Test that orchestrator accepts input format."""
     user_id = "test_user"
     query = "What is Python?"
     model = "openai/gpt-4o-mini"
     
-    # Both should accept the same parameters
-    # We'll mock the LLM calls to avoid actual API calls
+    # Mock the LLM calls to avoid actual API calls
     with patch("app.llm_client.call_openrouter_chat") as mock_llm:
         mock_llm.return_value = "Python is a programming language."
         
-        # Test DomainOrchestrator (old)
+        # Test LangChainUnifiedOrchestrator
         try:
-            result_domain = await domain_orchestrator.process_query(
+            result = await langchain_unified_orchestrator.process_query(
                 user_id=user_id,
                 query=query,
                 model=model,
                 db=mock_db,
                 context_sources=None,
             )
-            assert hasattr(result_domain, "answer")
-            assert isinstance(result_domain.answer, str)
-        except Exception as e:
-            pytest.skip(f"DomainOrchestrator test skipped: {e}")
-        
-        # Test LangChainUnifiedOrchestrator (new)
-        try:
-            result_unified = await langchain_unified_orchestrator.process_query(
-                user_id=user_id,
-                query=query,
-                model=model,
-                db=mock_db,
-                context_sources=None,
-            )
-            assert hasattr(result_unified, "answer")
-            assert isinstance(result_unified.answer, str)
+            assert hasattr(result, "answer")
+            assert isinstance(result.answer, str)
         except Exception as e:
             pytest.skip(f"LangChainUnifiedOrchestrator test skipped: {e}")
 
 
 @pytest.mark.asyncio
 async def test_orchestrator_output_format(
-    domain_orchestrator: DomainOrchestrator,
     langchain_unified_orchestrator: LangChainUnifiedOrchestrator,
     mock_db,
 ):
-    """Test that both orchestrators return WorkflowResult with answer."""
+    """Test that orchestrator returns WorkflowResult with answer."""
     user_id = "test_user"
     query = "Explain machine learning"
     model = "openai/gpt-4o-mini"
@@ -88,41 +64,26 @@ async def test_orchestrator_output_format(
     with patch("app.llm_client.call_openrouter_chat") as mock_llm:
         mock_llm.return_value = "Machine learning is a subset of AI."
         
-        # Test both orchestrators return WorkflowResult
         try:
-            result_domain = await domain_orchestrator.process_query(
+            result = await langchain_unified_orchestrator.process_query(
                 user_id=user_id,
                 query=query,
                 model=model,
                 db=mock_db,
             )
-            assert hasattr(result_domain, "answer")
-            assert isinstance(result_domain.answer, str)
-            assert len(result_domain.answer) > 0
-        except Exception as e:
-            pytest.skip(f"DomainOrchestrator test skipped: {e}")
-        
-        try:
-            result_unified = await langchain_unified_orchestrator.process_query(
-                user_id=user_id,
-                query=query,
-                model=model,
-                db=mock_db,
-            )
-            assert hasattr(result_unified, "answer")
-            assert isinstance(result_unified.answer, str)
-            assert len(result_unified.answer) > 0
+            assert hasattr(result, "answer")
+            assert isinstance(result.answer, str)
+            assert len(result.answer) > 0
         except Exception as e:
             pytest.skip(f"LangChainUnifiedOrchestrator test skipped: {e}")
 
 
 @pytest.mark.asyncio
 async def test_context_sources_support(
-    domain_orchestrator: DomainOrchestrator,
     langchain_unified_orchestrator: LangChainUnifiedOrchestrator,
     mock_db,
 ):
-    """Test that both orchestrators support context_sources parameter."""
+    """Test that orchestrator supports context_sources parameter."""
     user_id = "test_user"
     query = "Analyze this code"
     model = "openai/gpt-4o-mini"
@@ -133,61 +94,43 @@ async def test_context_sources_support(
     with patch("app.llm_client.call_openrouter_chat") as mock_llm:
         mock_llm.return_value = "Code analysis complete."
         
-        # Both should accept context_sources
         try:
-            result_domain = await domain_orchestrator.process_query(
+            result = await langchain_unified_orchestrator.process_query(
                 user_id=user_id,
                 query=query,
                 model=model,
                 db=mock_db,
                 context_sources=context_sources,
             )
-            assert hasattr(result_domain, "answer")
-        except Exception as e:
-            pytest.skip(f"DomainOrchestrator context_sources test skipped: {e}")
-        
-        try:
-            result_unified = await langchain_unified_orchestrator.process_query(
-                user_id=user_id,
-                query=query,
-                model=model,
-                db=mock_db,
-                context_sources=context_sources,
-            )
-            assert hasattr(result_unified, "answer")
+            assert hasattr(result, "answer")
         except Exception as e:
             pytest.skip(f"LangChainUnifiedOrchestrator context_sources test skipped: {e}")
 
 
 @pytest.mark.asyncio
 async def test_memory_integration(
-    domain_orchestrator: DomainOrchestrator,
     langchain_unified_orchestrator: LangChainUnifiedOrchestrator,
     mock_db,
 ):
-    """Test that both orchestrators integrate with memory managers."""
+    """Test that orchestrator integrates with memory managers."""
     user_id = "test_user"
     query = "What did we discuss about Python?"
     model = "openai/gpt-4o-mini"
     
-    # Both orchestrators should use the same memory manager interface
-    assert hasattr(domain_orchestrator, "memory")
+    # Orchestrator should use memory manager interface
     assert hasattr(langchain_unified_orchestrator, "memory")
     
-    # Both should have store and search methods
-    assert hasattr(domain_orchestrator.memory, "store")
-    assert hasattr(domain_orchestrator.memory, "search")
+    # Should have store and search methods
     assert hasattr(langchain_unified_orchestrator.memory, "store")
     assert hasattr(langchain_unified_orchestrator.memory, "search")
 
 
 @pytest.mark.asyncio
 async def test_error_handling(
-    domain_orchestrator: DomainOrchestrator,
     langchain_unified_orchestrator: LangChainUnifiedOrchestrator,
     mock_db,
 ):
-    """Test that both orchestrators handle errors gracefully."""
+    """Test that orchestrator handles errors gracefully."""
     user_id = "test_user"
     query = "Test query"
     model = "openai/gpt-4o-mini"
@@ -196,61 +139,41 @@ async def test_error_handling(
     with patch("app.llm_client.call_openrouter_chat") as mock_llm:
         mock_llm.side_effect = Exception("LLM API error")
         
-        # Both should handle errors and return a WorkflowResult with error message
         try:
-            result_domain = await domain_orchestrator.process_query(
+            result = await langchain_unified_orchestrator.process_query(
                 user_id=user_id,
                 query=query,
                 model=model,
                 db=mock_db,
             )
             # Should return WorkflowResult even on error
-            assert hasattr(result_domain, "answer")
-            assert isinstance(result_domain.answer, str)
-        except Exception as e:
-            # If error handling fails, that's also a valid test result
-            pass
-        
-        try:
-            result_unified = await langchain_unified_orchestrator.process_query(
-                user_id=user_id,
-                query=query,
-                model=model,
-                db=mock_db,
-            )
-            # Should return WorkflowResult even on error
-            assert hasattr(result_unified, "answer")
-            assert isinstance(result_unified.answer, str)
+            assert hasattr(result, "answer")
+            assert isinstance(result.answer, str)
         except Exception as e:
             # If error handling fails, that's also a valid test result
             pass
 
 
-def test_orchestrator_interface_compatibility():
-    """Test that both orchestrators have compatible interfaces."""
-    domain = DomainOrchestrator()
+def test_orchestrator_interface():
+    """Test that orchestrator has required interface."""
     unified = LangChainUnifiedOrchestrator()
     
-    # Both should have process_query method
-    assert hasattr(domain, "process_query")
+    # Should have process_query method
     assert hasattr(unified, "process_query")
     
-    # Both should have memory attribute
-    assert hasattr(domain, "memory")
+    # Should have memory attribute
     assert hasattr(unified, "memory")
     
-    # Both should have llm attribute
-    assert hasattr(domain, "llm")
+    # Should have llm attribute
     assert hasattr(unified, "llm")
 
 
 @pytest.mark.asyncio
 async def test_rpi_workflow_structure(
-    domain_orchestrator: DomainOrchestrator,
     langchain_unified_orchestrator: LangChainUnifiedOrchestrator,
     mock_db,
 ):
-    """Test that both orchestrators follow the RPI (Research → Plan → Implement) workflow."""
+    """Test that orchestrator follows the RPI (Research → Plan → Implement) workflow."""
     user_id = "test_user"
     query = "Build a web scraper"
     model = "openai/gpt-4o-mini"
@@ -271,37 +194,16 @@ async def test_rpi_workflow_structure(
         
         mock_llm.side_effect = mock_llm_response
         
-        # Both orchestrators should go through RPI phases
-        # We can't easily verify the internal phases without more mocking,
-        # but we can verify they complete successfully
         try:
-            result_domain = await domain_orchestrator.process_query(
+            result = await langchain_unified_orchestrator.process_query(
                 user_id=user_id,
                 query=query,
                 model=model,
                 db=mock_db,
             )
-            assert hasattr(result_domain, "answer")
-            assert hasattr(result_domain, "research")
-            assert hasattr(result_domain, "plan")
-            # Should have made multiple LLM calls (research, plan, implement)
-            assert mock_llm.call_count >= 3
-        except Exception as e:
-            pytest.skip(f"DomainOrchestrator RPI test skipped: {e}")
-        
-        # Reset call count for unified test
-        call_count = 0
-        
-        try:
-            result_unified = await langchain_unified_orchestrator.process_query(
-                user_id=user_id,
-                query=query,
-                model=model,
-                db=mock_db,
-            )
-            assert hasattr(result_unified, "answer")
-            assert hasattr(result_unified, "research")
-            assert hasattr(result_unified, "plan")
+            assert hasattr(result, "answer")
+            assert hasattr(result, "research")
+            assert hasattr(result, "plan")
             # Should have made multiple LLM calls (research, plan, implement)
             assert mock_llm.call_count >= 3
         except Exception as e:

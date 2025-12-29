@@ -1,11 +1,15 @@
 """Index management for Obsidian vault."""
 
+import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
 from app.infrastructure.indexing.obsidian_indexer import ObsidianIndexer
 from app.infrastructure.config.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class IndexManager:
@@ -29,9 +33,10 @@ class IndexManager:
         
         This creates a new index, replacing any existing one.
         """
-        print(f"Building index for Obsidian vault: {self.vault_path}")
+        logger.info(f"Building index for Obsidian vault: {self.vault_path}")
         index = self.indexer.build_index()
-        print(f"✓ Index built successfully with {len(index.storage_context.docstore.docs)} documents")
+        doc_count = len(index.storage_context.docstore.docs)
+        logger.info(f"Index built successfully with {doc_count} documents")
 
     def update_index(self, file_paths: Optional[list[str]] = None) -> None:
         """Update index with new or changed files.
@@ -40,18 +45,19 @@ class IndexManager:
             file_paths: Optional list of specific file paths to update
         """
         if file_paths:
-            print(f"Updating index for {len(file_paths)} files")
+            logger.info(f"Updating index for {len(file_paths)} files")
         else:
-            print("Updating index (full rebuild)")
+            logger.info("Updating index (full rebuild)")
         
         index = self.indexer.update_index(file_paths=file_paths)
-        print(f"✓ Index updated successfully")
+        logger.info("Index updated successfully")
 
     def refresh_index(self) -> None:
         """Refresh (rebuild) the entire index."""
-        print(f"Refreshing index for Obsidian vault: {self.vault_path}")
+        logger.info(f"Refreshing index for Obsidian vault: {self.vault_path}")
         index = self.indexer.refresh_index()
-        print(f"✓ Index refreshed successfully with {len(index.storage_context.docstore.docs)} documents")
+        doc_count = len(index.storage_context.docstore.docs)
+        logger.info(f"Index refreshed successfully with {doc_count} documents")
 
     def load_index(self) -> bool:
         """Load existing index if available.
@@ -61,9 +67,9 @@ class IndexManager:
         """
         index = self.indexer.load_index()
         if index is not None:
-            print("✓ Existing index loaded")
+            logger.info("Existing index loaded")
             return True
-        print("✗ No existing index found")
+        logger.info("No existing index found")
         return False
 
 
@@ -102,12 +108,13 @@ def main() -> None:
         elif args.command == "load":
             manager.load_index()
     except ValueError as e:
-        print(f"Error: {e}")
-        print("Set OBSIDIAN_VAULT_PATH environment variable or use --vault-path")
-        exit(1)
+        print(f"Error: {e}", file=sys.stderr)
+        print("Set OBSIDIAN_VAULT_PATH environment variable or use --vault-path", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        print(f"Error: {e}")
-        exit(1)
+        logger.exception("Error during index operation")
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

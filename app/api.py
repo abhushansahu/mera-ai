@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.types import ContextSource
+from app.core import ContextSource
 from app.db import Base, engine, get_db
 from app.infrastructure.config.settings import get_settings
 from app.infrastructure.observability import (
@@ -19,7 +19,7 @@ from app.infrastructure.observability import (
     is_langsmith_enabled,
 )
 from app.orchestrators import LangChainUnifiedOrchestrator
-from app.adapters.openrouter.llm import _close_async_client
+from app.adapters.openrouter import _close_async_client
 from app.spaces.space_manager import SpaceManager
 from app.spaces.space_model import SpaceConfig, SpaceStatus, SpaceUsage
 # Import models to ensure they're registered with SQLAlchemy Base
@@ -260,9 +260,16 @@ def create_app() -> FastAPI:
 
     @app.post("/mem0/add")
     async def add_memory(request: AddMemoryRequest) -> Dict[str, str]:
-        from app.memory_factory import get_memory_manager
+        from app.adapters.chroma import ChromaMemoryAdapter
+        from app.infrastructure.config.settings import get_settings
         try:
-            memory = get_memory_manager()
+            settings = get_settings()
+            memory = ChromaMemoryAdapter(
+                host=settings.chroma_host,
+                port=settings.chroma_port,
+                collection_name=settings.chroma_collection_name,
+                persist_directory=settings.chroma_persist_dir,
+            )
             await memory.store(
                 user_id=request.user_id,
                 text=request.messages if isinstance(request.messages, str) else str(request.messages),
@@ -274,9 +281,16 @@ def create_app() -> FastAPI:
 
     @app.post("/mem0/search")
     async def search_memories(request: SearchMemoryRequest) -> Dict[str, Any]:
-        from app.memory_factory import get_memory_manager
+        from app.adapters.chroma import ChromaMemoryAdapter
+        from app.infrastructure.config.settings import get_settings
         try:
-            memory = get_memory_manager()
+            settings = get_settings()
+            memory = ChromaMemoryAdapter(
+                host=settings.chroma_host,
+                port=settings.chroma_port,
+                collection_name=settings.chroma_collection_name,
+                persist_directory=settings.chroma_persist_dir,
+            )
             memories = await memory.search(
                 user_id=request.user_id,
                 query=request.query,
@@ -289,9 +303,16 @@ def create_app() -> FastAPI:
 
     @app.get("/mem0/get_all/{user_id}")
     async def get_all_memories(user_id: str, limit: int = 100) -> Dict[str, Any]:
-        from app.memory_factory import get_memory_manager
+        from app.adapters.chroma import ChromaMemoryAdapter
+        from app.infrastructure.config.settings import get_settings
         try:
-            memory = get_memory_manager()
+            settings = get_settings()
+            memory = ChromaMemoryAdapter(
+                host=settings.chroma_host,
+                port=settings.chroma_port,
+                collection_name=settings.chroma_collection_name,
+                persist_directory=settings.chroma_persist_dir,
+            )
             memories = await memory.search(
                 user_id=user_id,
                 query="",

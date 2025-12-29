@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from app.obsidian_client import ObsidianClient
+from app.adapters.obsidian import ObsidianClient
 
 
 def test_obsidian_client_create_note_with_mock():

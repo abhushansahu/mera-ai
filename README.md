@@ -1,12 +1,13 @@
-# Mera AI - Unified AI Assistant
+# Mera AI - Unified AI Assistant with Spaces
 
-A self-hosted AI assistant that provides a single interface to chat with multiple AI models, with persistent memory and knowledge base integration.
+A self-hosted AI assistant that provides a single interface to chat with multiple AI models, with persistent memory, knowledge base integration, and **multi-project isolation via Spaces**.
 
 ## What It Does
 
 - **Unified Interface**: Chat with any AI model through OpenRouter (GPT-4, Claude, and 280+ others)
 - **Persistent Memory**: Remembers conversations using Chroma vector database
 - **Knowledge Base**: Integrates with Obsidian vault using LlamaIndex for enhanced retrieval
+- **Spaces System**: Multi-project isolation with separate memory, vaults, and token budgets
 - **Observability**: Track usage, costs, and performance with LangSmith
 - **LangChain Orchestration**: Uses LangChain Agents and Chains for Research → Plan → Implement workflow
 - **Self-Hosted**: Everything runs locally except the AI model API calls
@@ -68,8 +69,6 @@ This starts:
 
 The API will be available at http://localhost:8000
 
-**Note:** If you're using Obsidian integration, you may need to mount your vault directory. Edit `docker-compose.yml` and uncomment the Obsidian vault volume mount, then set your vault path.
-
 #### 4. Stop Services
 
 ```bash
@@ -84,12 +83,26 @@ docker-compose down
 
 ### Chat with AI
 
+**Basic chat (without Spaces):**
+
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "user123",
     "query": "Hello, remember my name is Alice"
+  }'
+```
+
+**Chat with Spaces (recommended for multi-project work):**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "query": "How does authentication work in our system?",
+    "space_id": "harmonychain"
   }'
 ```
 
@@ -104,6 +117,88 @@ curl http://localhost:8000/status
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+## Spaces System
+
+Spaces enable **complete isolation** between different projects, allowing you to run multiple projects simultaneously without data leakage.
+
+### What Spaces Provide
+
+- **Isolated Memory**: Each space has its own Chroma collection
+- **Isolated Knowledge Base**: Each space has its own Obsidian vault
+- **Isolated Database**: Each space has its own PostgreSQL schema
+- **Token Budget Tracking**: Track costs per project with monthly budgets
+- **Team Collaboration**: Multiple users can work on different spaces
+- **Instant Context Switching**: Switch between projects instantly
+
+### Creating a Space
+
+```bash
+curl -X POST http://localhost:8000/spaces/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "space_id": "harmonychain",
+    "name": "HarmonyChain Project",
+    "owner_id": "alice",
+    "monthly_token_budget": 500000,
+    "preferred_model": "openai/gpt-4o-mini"
+  }'
+```
+
+### Listing Your Spaces
+
+```bash
+curl "http://localhost:8000/spaces/list?owner_id=alice"
+```
+
+### Switching Spaces
+
+```bash
+curl -X POST http://localhost:8000/spaces/switch?space_id=harmonychain
+```
+
+### Checking Space Usage
+
+```bash
+curl "http://localhost:8000/spaces/harmonychain/usage"
+```
+
+### Space Management Endpoints
+
+- `POST /spaces/create` - Create a new space
+- `GET /spaces/list?owner_id={owner_id}` - List all spaces for an owner
+- `POST /spaces/switch?space_id={space_id}` - Switch active space
+- `GET /spaces/current` - Get current space
+- `GET /spaces/{space_id}/usage` - Get space usage for current month
+- `DELETE /spaces/{space_id}?permanently=false` - Archive or delete space
+
+### Spaces Architecture
+
+```
+User Query + SpaceID
+    ↓
+SpaceManager validates & loads space
+    ↓
+Research-Plan-Implement (within space)
+    ├─ Access space-specific Chroma collection
+    ├─ Access space-specific Obsidian vault
+    ├─ Access space-specific PostgreSQL schema
+    └─ Respects space token budget
+    ↓
+Isolated Results (saved to space)
+```
+
+### Benefits of Spaces
+
+| Feature | Without Spaces | With Spaces |
+|---------|----------------|------------|
+| **Project Isolation** | ❌ All mixed | ✅ Completely separate |
+| **Memory Leakage** | ❌ Possible | ✅ Impossible |
+| **Cost Tracking** | ❌ Combined | ✅ Per-space |
+| **Team Collaboration** | ❌ Hard | ✅ Built-in |
+| **Multi-Project** | ❌ Difficult | ✅ Easy |
+| **Context Switching** | ❌ Slow | ✅ Instant |
+| **Data Privacy** | ❌ Shared | ✅ Isolated |
+
 ## Architecture
 
 ### LangChain Orchestration
@@ -113,6 +208,16 @@ The system uses LangChain Agents and Chains to implement a Research → Plan →
 - **Research Phase**: LangChain Agent with retrieval tools (Chroma memory, Obsidian vault, multi-agent context)
 - **Plan Phase**: LLM planner that creates structured implementation plans
 - **Implement Phase**: Tool-calling agent that executes the plan step-by-step
+
+### Multi-Agent System
+
+The research phase uses specialized sub-agents that work in parallel:
+
+- **FileExplorer**: Reads and analyzes code files
+- **LinkCrawler**: Fetches and processes web documentation
+- **DataAnalyzer**: Queries database schemas
+- **MemoryRetriever**: Searches relevant memories
+- **Synthesizer**: Combines all findings into coherent research
 
 ### Observability with LangSmith
 
@@ -153,13 +258,15 @@ curl -X POST http://localhost:8000/mem0/search \
   }'
 ```
 
+**Note**: When using Spaces, memories are automatically isolated per space.
+
 ### Obsidian Integration
 
 Connect your Obsidian vault to provide context from your notes. The system uses LlamaIndex to index your vault for enhanced retrieval.
 
 **Setup:**
 
-1. Set `OBSIDIAN_VAULT_PATH` in `.env` to your vault directory
+1. Set `OBSIDIAN_VAULT_PATH` in `.env` to your vault directory (optional - Spaces can have their own vaults)
 
 2. Edit `docker-compose.yml` and uncomment the Obsidian vault volume mount
    - Set the path to your vault: `- /path/to/your/obsidian/vault:/app/obsidian_vault:ro`
@@ -205,9 +312,13 @@ curl -X POST http://localhost:8000/chat \
 - `DATABASE_URL` - PostgreSQL connection (default: `postgresql+psycopg2://ai_user:ai_password@localhost:5432/ai_assistant`)
 
 **Optional:**
-- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` - For observability
+- `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` - For observability
 - `OBSIDIAN_REST_URL` / `OBSIDIAN_REST_TOKEN` - For Obsidian integration
 - `CHROMA_PERSIST_DIR` - Memory storage location (default: `./chroma_db`)
+- `CHROMA_HOST` / `CHROMA_PORT` - For client-server Chroma mode
+- `CORS_ORIGINS` - CORS allowed origins (default: `*` for development)
+
+See `env.example` for complete configuration options.
 
 ## Managing Services
 
@@ -258,7 +369,6 @@ There's an Obsidian plugin available for direct integration. See [obsidian-plugi
 ```bash
 # Check if ports are in use
 lsof -i :8000
-lsof -i :3000
 lsof -i :5432
 
 # Check Docker containers
@@ -285,20 +395,53 @@ docker exec -it mera-ai-postgres psql -U ai_user -d ai_assistant -c "SELECT 1;"
 5. Restart the application: `docker-compose restart app`
 6. Rebuild if needed: `docker-compose up -d --build app`
 
+### Spaces Issues
+
+1. Verify space exists: `curl "http://localhost:8000/spaces/list?owner_id=your_id"`
+2. Check space usage: `curl "http://localhost:8000/spaces/{space_id}/usage"`
+3. Verify database schema was created for the space
+4. Check application logs for space-related errors
+
 ## Project Structure
 
 ```
 mera-ai/
-├── app/              # Main application code
-│   ├── api/          # API routes
-│   ├── core/         # Core logic
-│   ├── adapters/     # External service adapters
-│   └── infrastructure/ # Infrastructure setup
-├── obsidian-plugin/  # Obsidian integration plugin
-├── scripts/          # Utility scripts
-├── tests/            # Test files
-└── docker-compose.yml # Service configuration
+├── app/                    # Main application code
+│   ├── api/               # API routes
+│   ├── core/              # Core logic and types
+│   ├── adapters/          # External service adapters (Chroma, OpenRouter, Obsidian)
+│   ├── spaces/            # Spaces system (isolation, budgets, management)
+│   ├── orchestrators/     # LangChain unified orchestrator
+│   ├── domain/            # Domain logic (workflows, agents)
+│   └── infrastructure/    # Infrastructure setup (indexing, observability)
+├── obsidian-plugin/       # Obsidian integration plugin
+├── scripts/               # Utility scripts
+├── tests/                 # Test files
+└── docker-compose.yml     # Service configuration
 ```
+
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test file
+pytest tests/unit/test_spaces.py
+
+# Run with coverage
+pytest --cov=app tests/
+```
+
+### Code Structure
+
+- **Orchestrator**: `app/orchestrators/langchain_unified.py` - Main RPI workflow
+- **Spaces**: `app/spaces/` - Space management and isolation
+- **Memory**: `app/adapters/chroma/memory.py` - Chroma-based memory adapter
+- **API**: `app/api.py` - FastAPI endpoints
+- **Multi-Agent**: `app/multi_agent_context_system.py` - Parallel sub-agents
 
 ## License
 

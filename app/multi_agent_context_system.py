@@ -12,7 +12,7 @@ from app.infrastructure.observability import observe_langsmith
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 
-from app.cache import get_cached, set_cached
+from app.infrastructure.cache import get_cached, set_cached
 
 
 class ContextSourceType(str, Enum):

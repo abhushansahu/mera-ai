@@ -1,4 +1,4 @@
-"""Integration tests for ChromaMemoryManager."""
+"""Integration tests for ChromaMemoryAdapter."""
 
 import os
 import pytest
@@ -6,7 +6,7 @@ import tempfile
 import shutil
 from typing import Dict, Any
 
-from app.memory_chroma import ChromaMemoryManager
+from app.adapters.chroma import ChromaMemoryAdapter
 
 
 @pytest.fixture
@@ -19,15 +19,15 @@ def temp_chroma_dir():
 
 @pytest.fixture
 def chroma_manager(temp_chroma_dir):
-    """Create a ChromaMemoryManager instance for testing."""
-    return ChromaMemoryManager(
+    """Create a ChromaMemoryAdapter instance for testing."""
+    return ChromaMemoryAdapter(
         persist_directory=temp_chroma_dir,
         collection_name="test_memories",
     )
 
 
 @pytest.mark.asyncio
-async def test_store_and_search(chroma_manager: ChromaMemoryManager):
+async def test_store_and_search(chroma_manager: ChromaMemoryAdapter):
     """Test storing and searching memories."""
     user_id = "test_user"
     
@@ -46,12 +46,12 @@ async def test_store_and_search(chroma_manager: ChromaMemoryManager):
     )
     
     assert len(results) > 0
-    assert any("Python" in r["text"] for r in results)
-    assert results[0]["metadata"]["source"] == "test"
+    assert any("Python" in r.text for r in results)
+    assert results[0].metadata.get("source") == "test"
 
 
 @pytest.mark.asyncio
-async def test_user_isolation(chroma_manager: ChromaMemoryManager):
+async def test_user_isolation(chroma_manager: ChromaMemoryAdapter):
     """Test that memories are isolated by user_id."""
     user1 = "user1"
     user2 = "user2"
@@ -83,14 +83,14 @@ async def test_user_isolation(chroma_manager: ChromaMemoryManager):
     )
     
     # Verify isolation
-    assert all(r["metadata"]["user"] == "1" for r in results1)
-    assert all(r["metadata"]["user"] == "2" for r in results2)
+    assert all(r.metadata.get("user") == "1" for r in results1)
+    assert all(r.metadata.get("user") == "2" for r in results2)
     assert len(results1) > 0
     assert len(results2) > 0
 
 
 @pytest.mark.asyncio
-async def test_metadata_filtering(chroma_manager: ChromaMemoryManager):
+async def test_metadata_filtering(chroma_manager: ChromaMemoryAdapter):
     """Test that metadata is stored and retrieved correctly."""
     user_id = "test_user"
     
@@ -112,13 +112,13 @@ async def test_metadata_filtering(chroma_manager: ChromaMemoryManager):
     
     assert len(results) > 0
     result = results[0]
-    assert result["metadata"]["source"] == "test"
-    assert result["metadata"]["category"] == "example"
-    assert result["metadata"]["priority"] == "high"
+    assert result.metadata.get("source") == "test"
+    assert result.metadata.get("category") == "example"
+    assert result.metadata.get("priority") == "high"
 
 
 @pytest.mark.asyncio
-async def test_search_limit(chroma_manager: ChromaMemoryManager):
+async def test_search_limit(chroma_manager: ChromaMemoryAdapter):
     """Test that search respects the limit parameter."""
     user_id = "test_user"
     
@@ -141,7 +141,7 @@ async def test_search_limit(chroma_manager: ChromaMemoryManager):
 
 
 @pytest.mark.asyncio
-async def test_similarity_search(chroma_manager: ChromaMemoryManager):
+async def test_similarity_search(chroma_manager: ChromaMemoryAdapter):
     """Test that similarity search returns relevant results."""
     user_id = "test_user"
     
@@ -172,11 +172,11 @@ async def test_similarity_search(chroma_manager: ChromaMemoryManager):
     # Should return programming-related memories first
     assert len(results) > 0
     # At least one result should be about programming
-    assert any("programming" in r["text"].lower() or "Python" in r["text"] or "JavaScript" in r["text"] for r in results)
+    assert any("programming" in r.text.lower() or "Python" in r.text or "JavaScript" in r.text for r in results)
 
 
 @pytest.mark.asyncio
-async def test_empty_search(chroma_manager: ChromaMemoryManager):
+async def test_empty_search(chroma_manager: ChromaMemoryAdapter):
     """Test searching when no memories exist."""
     user_id = "new_user"
     
@@ -192,7 +192,7 @@ async def test_empty_search(chroma_manager: ChromaMemoryManager):
 
 
 @pytest.mark.asyncio
-async def test_multiple_stores(chroma_manager: ChromaMemoryManager):
+async def test_multiple_stores(chroma_manager: ChromaMemoryAdapter):
     """Test storing multiple memories for the same user."""
     user_id = "test_user"
     
@@ -217,6 +217,6 @@ async def test_multiple_stores(chroma_manager: ChromaMemoryManager):
     )
     
     assert len(results) >= 3
-    texts = [r["text"] for r in results]
+    texts = [r.text for r in results]
     assert any("Python" in text for text in texts)
     assert any("JavaScript" in text for text in texts)

@@ -1,14 +1,15 @@
-"""Unified LangChain-based orchestrator replacing DomainOrchestrator."""
+"""Unified LangChain-based orchestrator with Research → Plan → Implement workflow."""
 
+import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 
+import tiktoken
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.openrouter import OpenRouterLLMAdapter
-from app.core.orchestrator import Orchestrator, WorkflowResult
-from app.core.types import ContextSource, Query, UserID
+from app.core import ContextSource, Orchestrator, Query, UserID, WorkflowResult
 from app.infrastructure.config.settings import get_settings
 from app.infrastructure.observability import observe_langsmith
 from app.langchain_chains import (
@@ -16,19 +17,54 @@ from app.langchain_chains import (
     create_plan_chain,
     create_implement_chain,
 )
-from app.memory_factory import get_memory_manager, get_memory_manager_for_space
 from app.multi_agent_context_system import MultiAgentCoordinator
-from app.obsidian_client import ObsidianClient
+from app.adapters.obsidian import ObsidianClient
 from app.models import ConversationMessage
 from app.spaces.space_manager import SpaceManager
+
+logger = logging.getLogger(__name__)
+
+
+def _estimate_tokens(content: Any) -> int:
+    """Estimate token count using tiktoken."""
+    try:
+        enc = tiktoken.encoding_for_model("gpt-4o")
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    
+    if isinstance(content, str):
+        return len(enc.encode(content))
+    return len(enc.encode(str(content)))
+
+
+def _get_memory_manager(collection_name: Optional[str] = None) -> ChromaMemoryAdapter:
+    """Get memory manager with optional collection name override."""
+    settings = get_settings()
+    return ChromaMemoryAdapter(
+        host=settings.chroma_host,
+        port=settings.chroma_port,
+        collection_name=collection_name or settings.chroma_collection_name,
+        persist_directory=settings.chroma_persist_dir,
+    )
+
+
+def _get_memory_manager_for_space(space_config) -> ChromaMemoryAdapter:
+    """Get memory manager for a specific space."""
+    settings = get_settings()
+    return ChromaMemoryAdapter(
+        host=settings.chroma_host,
+        port=settings.chroma_port,
+        collection_name=space_config.mem0_collection_name,
+        persist_directory=settings.chroma_persist_dir,
+    )
 
 
 @dataclass
 class LangChainUnifiedOrchestrator:
     """Unified LangChain-based orchestrator with Research → Plan → Implement workflow.
     
-    This orchestrator uses LangChain Agents and Chains to replace the custom RPIWorkflow.
-    It maintains the same interface as DomainOrchestrator for compatibility.
+    This orchestrator uses LangChain Agents and Chains to implement the RPI workflow
+    with support for Spaces, multi-agent context, and observability.
     """
 
     llm: Optional[OpenRouterLLMAdapter] = None
@@ -107,7 +143,7 @@ class LangChainUnifiedOrchestrator:
                     )
 
                 # Use space-specific memory
-                space_memory = get_memory_manager_for_space(space_config)
+                space_memory = _get_memory_manager_for_space(space_config)
 
                 # Use space-specific Obsidian
                 space_obsidian = ObsidianClient(vault_path=space_config.obsidian_vault_path)
@@ -181,23 +217,32 @@ class LangChainUnifiedOrchestrator:
             )
 
             # Track token usage if space manager provided
-            # Note: Actual token tracking would need to be extracted from LLM responses
-            # For now, we'll estimate or track via metadata if available
+            # Use tiktoken for more accurate token estimation
             if space_manager:
                 try:
                     space_config = space_manager.get_current_space()
-                    # Estimate tokens (rough approximation: 1 token ≈ 4 characters)
-                    estimated_tokens = len(query + answer + research + plan) // 4
+                    # Estimate tokens using tiktoken for accuracy
+                    # Include query, research, plan, and answer
+                    total_tokens = (
+                        _estimate_tokens(query)
+                        + _estimate_tokens(research)
+                        + _estimate_tokens(plan)
+                        + _estimate_tokens(answer)
+                    )
                     # Cost estimation (rough: $0.015 per 1K tokens for GPT-4o-mini)
-                    estimated_cost = (estimated_tokens / 1000) * 0.015
+                    # This should be model-specific in production
+                    estimated_cost = (total_tokens / 1000) * 0.015
                     await space_manager.update_space_usage(
                         space_id=space_config.space_id,
-                        tokens_used=estimated_tokens,
+                        tokens_used=total_tokens,
                         api_calls_used=3,  # research, plan, implement
                         cost_usd=estimated_cost,
                     )
+                    tokens_used = total_tokens
                 except RuntimeError:
-                    pass
+                    logger.warning("Failed to track token usage: no space selected")
+                except Exception as e:
+                    logger.warning(f"Failed to track token usage: {e}")
 
             return WorkflowResult(
                 answer=answer,
@@ -219,31 +264,36 @@ class LangChainUnifiedOrchestrator:
         db: AsyncSession,
         space_schema: Optional[str] = None,
     ) -> None:
-        """Store conversation in database, optionally in space-specific schema."""
+        """Store conversation in database, optionally in space-specific schema.
+        
+        Optimized to use a single transaction and batch insert.
+        """
         from sqlalchemy import text
-        from app.db import engine
 
-        messages = [
-            {"role": "user", "content": query},
-            {"role": "assistant", "content": answer},
-        ]
-
-        # If space schema specified, set search_path
+        # If space schema specified, set search_path for this session
         if space_schema:
-            async with engine.connect() as conn:
-                # Set schema for this transaction
-                await conn.execute(text(f'SET search_path TO "{space_schema}", public'))
-                await conn.commit()
+            await db.execute(text(f'SET search_path TO "{space_schema}", public'))
 
-        for idx, msg in enumerate(messages):
-            db_msg = ConversationMessage(
-                id=f"{user_id}-{idx}",
+        # Create both messages in a single batch
+        messages = [
+            ConversationMessage(
+                id=f"{user_id}-{hash(query)}-0",
                 user_id=user_id,
-                role=msg["role"],
-                content=msg["content"],
+                role="user",
+                content=query,
                 message_metadata={},
-            )
-            db.add(db_msg)
+            ),
+            ConversationMessage(
+                id=f"{user_id}-{hash(query)}-1",
+                user_id=user_id,
+                role="assistant",
+                content=answer,
+                message_metadata={},
+            ),
+        ]
+        
+        # Batch add and commit in single transaction
+        db.add_all(messages)
         await db.commit()
 
     async def _store_memory(

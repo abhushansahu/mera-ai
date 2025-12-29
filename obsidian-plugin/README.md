@@ -48,7 +48,6 @@ Open Obsidian Settings → Mera AI and set:
 ## Requirements
 
 - Mera AI API running on `http://localhost:8000`
-- Mem0 service running on `http://localhost:8001`
 
 ## Troubleshooting
 
@@ -61,5 +60,6 @@ Open Obsidian Settings → Mera AI and set:
 - Check API Base URL in settings
 
 **Memory operations failing?**
-- Verify Mem0 is running: `curl http://localhost:8001/health`
+- Verify API is running and database is connected
 - Check user ID matches your setup
+- If using Spaces, ensure space_id is configured correctly
