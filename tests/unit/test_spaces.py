@@ -5,8 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.spaces.space_model import SpaceConfig, SpaceStatus, SpaceUsage
-from app.spaces.space_manager import SpaceManager
+from app.spaces import SpaceConfig, SpaceManager, SpaceStatus, SpaceUsage
 from app.models import SpaceRecord, SpaceUsageRecord
 
 
@@ -144,9 +143,9 @@ class TestSpaceManager:
             owner_id="user123",
         )
 
-        with patch("app.spaces.space_manager.Path") as mock_path, \
-             patch("app.spaces.space_manager.chromadb") as mock_chroma, \
-             patch("app.spaces.space_manager.engine") as mock_engine:
+        with patch("app.spaces.Path") as mock_path, \
+             patch("app.spaces.chromadb") as mock_chroma, \
+             patch("app.spaces.engine") as mock_engine:
             # Mock directory creation
             mock_vault_path = MagicMock()
             mock_path.return_value = mock_vault_path

@@ -35,33 +35,6 @@ class ConversationMessage(Base):
         }
 
 
-class ReviewTask(Base):
-    """Review task model for database persistence."""
-
-    __tablename__ = "review_tasks"
-
-    id = Column(String, primary_key=True)
-    user_id = Column(String, index=True, nullable=False)
-    type = Column(String, nullable=False)  # "research" | "plan"
-    content = Column(Text, nullable=False)
-    status = Column(String, nullable=False, default="pending")  # "pending" | "approved" | "rejected"
-    reviewer_notes = Column(Text, nullable=False, default="")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "user_id": self.user_id,
-            "type": self.type,
-            "content": self.content,
-            "status": self.status,
-            "reviewer_notes": self.reviewer_notes,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-        }
-
-
 class SpaceRecord(Base):
     """Space metadata model for database persistence."""
 

@@ -1,4 +1,4 @@
-from app.infrastructure.config.settings import get_settings
+from app.config import get_settings
 
 
 def test_load_settings_has_defaults() -> None:

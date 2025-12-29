@@ -6,10 +6,10 @@ A self-hosted AI assistant that provides a single interface to chat with multipl
 
 - **Unified Interface**: Chat with any AI model through OpenRouter (GPT-4, Claude, and 280+ others)
 - **Persistent Memory**: Remembers conversations using Chroma vector database
-- **Knowledge Base**: Integrates with Obsidian vault using LlamaIndex for enhanced retrieval
+- **Knowledge Base**: Integrates with Obsidian vault via REST API
 - **Spaces System**: Multi-project isolation with separate memory, vaults, and token budgets
-- **Observability**: Track usage, costs, and performance with LangSmith
-- **LangChain Orchestration**: Uses LangChain Agents and Chains for Research → Plan → Implement workflow
+- **Observability**: Track usage, costs, and performance with LangSmith (optional)
+- **CrewAI Orchestration**: Uses CrewAI multi-agent framework for Research → Plan → Implement workflow
 - **Self-Hosted**: Everything runs locally except the AI model API calls
 
 ## Quick Start
@@ -201,13 +201,13 @@ Isolated Results (saved to space)
 
 ## Architecture
 
-### LangChain Orchestration
+### CrewAI Orchestration
 
-The system uses LangChain Agents and Chains to implement a Research → Plan → Implement (RPI) workflow:
+The system uses CrewAI multi-agent framework to implement a Research → Plan → Implement (RPI) workflow:
 
-- **Research Phase**: LangChain Agent with retrieval tools (Chroma memory, Obsidian vault, multi-agent context)
-- **Plan Phase**: LLM planner that creates structured implementation plans
-- **Implement Phase**: Tool-calling agent that executes the plan step-by-step
+- **Research Phase**: CrewAI Researcher Agent with tools (Chroma memory, Obsidian vault, file explorer, link crawler, data analyzer)
+- **Plan Phase**: CrewAI Planner Agent that creates structured implementation plans
+- **Implement Phase**: CrewAI Implementer Agent that executes the plan step-by-step
 
 ### Multi-Agent System
 
@@ -221,18 +221,18 @@ The research phase uses specialized sub-agents that work in parallel:
 
 ### Observability with LangSmith
 
-All operations are traced using LangSmith for:
+All operations are traced using LangSmith (optional) for:
 - Request/response tracking
 - Token usage and cost monitoring
 - Performance metrics
 - Debugging and optimization
 
-### LlamaIndex Integration
+### Obsidian Integration
 
-Obsidian vault is indexed using LlamaIndex with Chroma as the vector store:
-- Structured document indexing
-- Enhanced retrieval with metadata filtering
-- Incremental updates support
+Obsidian vault is accessed via REST API:
+- Direct vault search via Obsidian Local REST API plugin
+- No indexing required - real-time search
+- Space-specific vault support
 
 ## Key Features
 
@@ -262,34 +262,20 @@ curl -X POST http://localhost:8000/mem0/search \
 
 ### Obsidian Integration
 
-Connect your Obsidian vault to provide context from your notes. The system uses LlamaIndex to index your vault for enhanced retrieval.
+Connect your Obsidian vault to provide context from your notes via REST API.
 
 **Setup:**
 
-1. Set `OBSIDIAN_VAULT_PATH` in `.env` to your vault directory (optional - Spaces can have their own vaults)
+1. Install the [Local REST API plugin](https://github.com/coddingtonbear/obsidian-local-rest-api) in Obsidian
+2. Enable the plugin and note the port (default: 27124)
+3. Configure in `.env`:
+   ```
+   OBSIDIAN_REST_URL=http://localhost:27124
+   OBSIDIAN_REST_TOKEN=your_token_here  # Optional, if plugin requires auth
+   ```
+4. The system will automatically use the vault for retrieval
 
-2. Edit `docker-compose.yml` and uncomment the Obsidian vault volume mount
-   - Set the path to your vault: `- /path/to/your/obsidian/vault:/app/obsidian_vault:ro`
-   - Update `OBSIDIAN_VAULT_PATH` in `.env` to `/app/obsidian_vault`
-
-3. Rebuild the container: `docker-compose up -d --build app`
-
-4. Build the index: `docker-compose exec app python -m app.infrastructure.indexing.index_manager build`
-
-5. The system will automatically use the indexed vault for retrieval
-
-**Index Management:**
-
-- Build: `docker-compose exec app python -m app.infrastructure.indexing.index_manager build`
-- Update: `docker-compose exec app python -m app.infrastructure.indexing.index_manager update`
-- Refresh: `docker-compose exec app python -m app.infrastructure.indexing.index_manager refresh`
-
-Configure in `.env`:
-
-```
-OBSIDIAN_REST_URL=http://localhost:27124
-OBSIDIAN_REST_TOKEN=your_token_here
-```
+**Note**: Spaces can have their own vault paths configured.
 
 ### Multi-Model Support
 
@@ -358,10 +344,6 @@ docker-compose restart app
 docker-compose up -d --build app
 ```
 
-## Obsidian Plugin
-
-There's an Obsidian plugin available for direct integration. See [obsidian-plugin/README.md](obsidian-plugin/README.md) for details.
-
 ## Troubleshooting
 
 ### Services Not Starting
@@ -407,14 +389,18 @@ docker exec -it mera-ai-postgres psql -U ai_user -d ai_assistant -c "SELECT 1;"
 ```
 mera-ai/
 ├── app/                    # Main application code
-│   ├── api/               # API routes
-│   ├── core/              # Core logic and types
 │   ├── adapters/          # External service adapters (Chroma, OpenRouter, Obsidian)
-│   ├── spaces/            # Spaces system (isolation, budgets, management)
-│   ├── orchestrators/     # LangChain unified orchestrator
-│   ├── domain/            # Domain logic (workflows, agents)
-│   └── infrastructure/    # Infrastructure setup (indexing, observability)
-├── obsidian-plugin/       # Obsidian integration plugin
+│   ├── api.py             # FastAPI routes
+│   ├── config.py          # Configuration management
+│   ├── core.py            # Core types and protocols
+│   ├── crewai.py          # CrewAI agents, tools, and tasks
+│   ├── db.py              # Database setup
+│   ├── main.py            # Application entry point
+│   ├── models.py          # SQLAlchemy models
+│   ├── multi_agent_context_system.py  # Multi-agent coordinator
+│   ├── observability.py   # LangSmith tracing (optional)
+│   ├── orchestrator.py   # CrewAI orchestrator (RPI workflow)
+│   └── spaces.py          # Spaces system (isolation, budgets, management)
 ├── scripts/               # Utility scripts
 ├── tests/                 # Test files
 └── docker-compose.yml     # Service configuration
@@ -437,11 +423,12 @@ pytest --cov=app tests/
 
 ### Code Structure
 
-- **Orchestrator**: `app/orchestrators/langchain_unified.py` - Main RPI workflow
-- **Spaces**: `app/spaces/` - Space management and isolation
-- **Memory**: `app/adapters/chroma/memory.py` - Chroma-based memory adapter
+- **Orchestrator**: `app/orchestrator.py` - Main RPI workflow using CrewAI
+- **Spaces**: `app/spaces.py` - Space management and isolation
+- **Memory**: `app/adapters/chroma.py` - Chroma-based memory adapter
 - **API**: `app/api.py` - FastAPI endpoints
 - **Multi-Agent**: `app/multi_agent_context_system.py` - Parallel sub-agents
+- **CrewAI**: `app/crewai.py` - CrewAI agents, tools, and tasks
 
 ## License
 

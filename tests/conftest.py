@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.openrouter import OpenRouterLLMAdapter
 # RPIWorkflow removed - production uses LangChain version
-from app.infrastructure.config.settings import Settings
+from app.config import Settings
 
 
 @pytest.fixture
