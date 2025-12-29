@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 import httpx
-from app.infrastructure.observability import observe_langsmith
+from app.observability import observe_langsmith
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
-
-from app.infrastructure.cache import get_cached, set_cached
 
 
 class ContextSourceType(str, Enum):
@@ -188,30 +186,10 @@ class MultiAgentCoordinator:
 
                 if path.is_file():
                     try:
-                        mtime = path.stat().st_mtime
-                        cache_key = ("file_read", path_str, mtime)
-                        cached_content = await get_cached("file_read", cache_key)
-                        if cached_content is not None:
-                            return cached_content
-                    except Exception:
-                        pass
-
-                    try:
-                        content = await asyncio.to_thread(
-                            path.read_text, encoding="utf-8", errors="ignore"
-                        )
+                        content = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
                         if len(content) > 50000:
                             content = content[:50000] + "\n\n[... truncated ...]"
-                        result = f"## File: {path_str}\n\n```\n{content}\n```"
-                        
-                        try:
-                            mtime = path.stat().st_mtime
-                            cache_key = ("file_read", path_str, mtime)
-                            await set_cached("file_read", cache_key, result, ttl=3600)
-                        except Exception:
-                            pass
-                        
-                        return result
+                        return f"## File: {path_str}\n\n```\n{content}\n```"
                     except Exception as e:
                         return f"Error reading {path_str}: {e}"
 

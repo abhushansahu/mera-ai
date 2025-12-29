@@ -135,11 +135,3 @@ class ObsidianError(MeraAIError):
     pass
 
 
-class IndexError(MeraAIError):
-    """Raised when there's an error with indexing operations."""
-    pass
-
-
-class WorkflowError(MeraAIError):
-    """Raised when there's an error in workflow execution."""
-    pass

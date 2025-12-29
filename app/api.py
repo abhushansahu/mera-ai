@@ -12,16 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import ContextSource
 from app.db import Base, engine, get_db
-from app.infrastructure.config.settings import get_settings
-from app.infrastructure.observability import (
-    get_langsmith_client,
-    get_langsmith_error,
-    is_langsmith_enabled,
-)
-from app.orchestrators import LangChainUnifiedOrchestrator
+from app.config import get_settings
+from app.observability import is_langsmith_enabled
+from app.orchestrator import CrewAIOrchestrator
 from app.adapters.openrouter import _close_async_client
-from app.spaces.space_manager import SpaceManager
-from app.spaces.space_model import SpaceConfig, SpaceStatus, SpaceUsage
+from app.spaces import SpaceConfig, SpaceManager, SpaceStatus, SpaceUsage
 # Import models to ensure they're registered with SQLAlchemy Base
 from app.models import SpaceRecord, SpaceUsageRecord  # noqa: F401
 
@@ -116,66 +111,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     
-    # Add exception handler for validation errors to provide better error messages
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        """Handle validation errors and return detailed error messages."""
-        errors = exc.errors()
-        error_details = []
-        
-        # Check if the issue is missing Content-Type header
-        content_type = request.headers.get("content-type", "")
-        missing_content_type = not content_type or "application/json" not in content_type
-        
-        for error in errors:
-            field_path = ".".join(str(loc) for loc in error["loc"])
-            error_msg = error["msg"]
-            
-            # Provide helpful message for missing Content-Type
-            if missing_content_type and error["type"] == "model_attributes_type":
-                error_msg = (
-                    f"{error_msg}. "
-                    "Make sure to include 'Content-Type: application/json' header in your request."
-                )
-            
-            error_details.append({
-                "field": field_path,
-                "message": error_msg,
-                "type": error["type"]
-            })
-        
-        response_content = {
-            "detail": "Validation error",
-            "errors": error_details,
-        }
-        
-        # Add helpful hint about Content-Type if missing
-        if missing_content_type:
-            response_content["hint"] = (
-                "Your request is missing the 'Content-Type: application/json' header. "
-                "Add this header to your request to send JSON data."
-            )
-        
-        return JSONResponse(
-            status_code=422,
-            content=response_content,
-        )
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
     
     if is_langsmith_enabled():
-        langsmith_client = get_langsmith_client()
-        if langsmith_client:
-            logger.info("LangSmith observability enabled")
-        else:
-            error_msg = get_langsmith_error()
-            if error_msg:
-                logger.warning(f"LangSmith keys configured but client initialization failed: {error_msg}")
-            else:
-                logger.warning("LangSmith keys configured but client initialization failed (unknown error)")
+        logger.info("LangSmith observability enabled")
     else:
         logger.info("LangSmith observability disabled (keys not configured)")
     
-    logger.info("Using LangChain unified orchestrator")
-    orchestrator = LangChainUnifiedOrchestrator()
+    logger.info("Using CrewAI unified orchestrator")
+    orchestrator = CrewAIOrchestrator()
     
     database_connected = False
     database_error = None
@@ -261,7 +207,7 @@ def create_app() -> FastAPI:
     @app.post("/mem0/add")
     async def add_memory(request: AddMemoryRequest) -> Dict[str, str]:
         from app.adapters.chroma import ChromaMemoryAdapter
-        from app.infrastructure.config.settings import get_settings
+        from app.config import get_settings
         try:
             settings = get_settings()
             memory = ChromaMemoryAdapter(
@@ -282,7 +228,7 @@ def create_app() -> FastAPI:
     @app.post("/mem0/search")
     async def search_memories(request: SearchMemoryRequest) -> Dict[str, Any]:
         from app.adapters.chroma import ChromaMemoryAdapter
-        from app.infrastructure.config.settings import get_settings
+        from app.config import get_settings
         try:
             settings = get_settings()
             memory = ChromaMemoryAdapter(
@@ -304,7 +250,7 @@ def create_app() -> FastAPI:
     @app.get("/mem0/get_all/{user_id}")
     async def get_all_memories(user_id: str, limit: int = 100) -> Dict[str, Any]:
         from app.adapters.chroma import ChromaMemoryAdapter
-        from app.infrastructure.config.settings import get_settings
+        from app.config import get_settings
         try:
             settings = get_settings()
             memory = ChromaMemoryAdapter(

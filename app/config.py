@@ -1,3 +1,5 @@
+"""Application configuration."""
+
 from functools import lru_cache
 from typing import Optional
 
@@ -6,16 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
 
     openrouter_api_key: str = Field(...)
     database_url: str = Field(...)
-
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1")
     default_model: str = Field(default="openai/gpt-4o-mini")
 
@@ -23,10 +19,6 @@ class Settings(BaseSettings):
     chroma_port: int = Field(default=8000)
     chroma_collection_name: str = Field(default="memories")
     chroma_persist_dir: str = Field(default="./chroma_db")
-
-    langfuse_public_key: Optional[str] = Field(default=None)  # Deprecated, use LangSmith
-    langfuse_secret_key: Optional[str] = Field(default=None)  # Deprecated, use LangSmith
-    langfuse_host: str = Field(default="http://localhost:3000")  # Deprecated, use LangSmith
 
     langsmith_api_key: Optional[str] = Field(default=None)
     langsmith_project: str = Field(default="mera-ai")
@@ -37,11 +29,7 @@ class Settings(BaseSettings):
     obsidian_rest_token: Optional[str] = Field(default=None)
     obsidian_vault_path: Optional[str] = Field(default=None)
     
-    # CORS configuration
-    cors_origins: Optional[str] = Field(
-        default=None,
-        description="Comma-separated list of allowed CORS origins. Use '*' for all origins (development only)."
-    )
+    cors_origins: Optional[str] = Field(default=None, description="Comma-separated list of allowed CORS origins. Use '*' for all origins (development only).")
 
 
 @lru_cache()
