@@ -1,0 +1,10 @@
+{
+  "id": "mera-context-bridge",
+  "name": "Mera Context Bridge",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Streams active note and click/selection events to Mera.",
+  "author": "Mera AI",
+  "authorUrl": "https://mera.ai",
+  "isDesktopOnly": false
+}

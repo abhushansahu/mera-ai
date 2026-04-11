@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package mera.sidecar.v1;
+
+message ObsidianContextEvent {
+  string event_id = 1;
+  string event_type = 2;
+  string note_path = 3;
+  string note_title = 4;
+  string selection = 5;
+  string clicked_target = 6;
+  int32 cursor_line = 7;
+  int64 event_ts_ms = 8;
+  string metadata_json = 9;
+}
+
+message HeartbeatRequest {
+  string user_id = 1;
+  string space_id = 2;
+  string session_id = 3;
+  string active_note_path = 4;
+  string active_note_title = 5;
+  string plugin_secret = 6;
+}
+
+message HeartbeatResponse {
+  string status = 1;
+  string session_id = 2;
+}
+
+message IngestEventRequest {
+  string user_id = 1;
+  string space_id = 2;
+  string session_id = 3;
+  ObsidianContextEvent event = 4;
+  string plugin_secret = 5;
+}
+
+message IngestEventResponse {
+  string status = 1;
+  string session_id = 2;
+  string active_note_path = 3;
+  int32 recent_events = 4;
+}
+
+message GetSessionRequest {
+  string user_id = 1;
+  string space_id = 2;
+  string session_id = 3;
+}
+
+message SessionEvent {
+  string event_id = 1;
+  string event_type = 2;
+  string note_path = 3;
+  string note_title = 4;
+  string selection = 5;
+  string clicked_target = 6;
+  int32 cursor_line = 7;
+  int64 event_ts_ms = 8;
+  string metadata_json = 9;
+  string received_at = 10;
+}
+
+message GetSessionResponse {
+  string session_id = 1;
+  string user_id = 2;
+  string space_id = 3;
+  string active_note_path = 4;
+  string active_note_title = 5;
+  string active_selection = 6;
+  repeated SessionEvent recent_events = 7;
+  string last_event_at = 8;
+  bool plugin_connected = 9;
+  string last_heartbeat_at = 10;
+  int64 last_heartbeat_age_ms = 11;
+}
+
+service SidecarContextService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc IngestEvent(IngestEventRequest) returns (IngestEventResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+}
