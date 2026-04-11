@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { ChatInterface } from '@/components/chat/ChatInterface';
+import { ApiSettings } from '@/components/settings/ApiSettings';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useTheme } from '@/hooks/useTheme';
 import { useState } from 'react';
@@ -25,6 +26,7 @@ const ContextPanel = dynamic(
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'chat' | 'spaces'>('chat');
+  const [showSettings, setShowSettings] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
   return (
@@ -41,6 +43,12 @@ export default function Home() {
                 aria-label="Toggle theme"
               >
                 {theme === 'dark' ? '☀️' : '🌙'}
+              </button>
+              <button
+                onClick={() => setShowSettings((prev) => !prev)}
+                className="px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-sm"
+              >
+                Settings
               </button>
               <button
                 onClick={() => setActiveTab('chat')}
@@ -65,6 +73,11 @@ export default function Home() {
             </div>
           </div>
         </div>
+        {showSettings && (
+          <div className="border-b p-3 bg-gray-50 dark:bg-gray-900">
+            <ApiSettings />
+          </div>
+        )}
         
         {activeTab === 'chat' && (
           <div className="flex-1 flex min-h-0">

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChatRequest } from '@/lib/api/client';
+import { getRuntimeApiUrl } from '@/lib/config/runtime';
 
 export interface StreamEvent {
   type: 'start' | 'research' | 'plan' | 'answer' | 'metadata' | 'done' | 'error';
@@ -43,7 +44,7 @@ export function useWorkflowStream() {
     setEvents([]);
     const newEvents: StreamEvent[] = [];
 
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const API_URL = getRuntimeApiUrl();
     const url = `${API_URL}/chat/stream`;
 
     try {

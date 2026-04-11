@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """Start all services for Mera AI.
 
-This script starts:
+This script starts (all via Docker Compose):
 - PostgreSQL (port 5432) - Main database
 - Mera AI Application (port 8000) - Main API server
+- Edge API proxy (port 8081) - Migration edge service
 - Frontend UI (port 3000) - Next.js web interface
 
 Docker services run in containers via docker-compose.
-Frontend runs as a local Node.js process.
 It checks for prerequisites, port conflicts, and manages all services together.
 """
 
-import os
 import signal
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 # Check if running in interactive mode
 def is_interactive() -> bool:
@@ -170,7 +169,7 @@ def check_env_file() -> bool:
     return True
 
 
-def start_docker_services() -> Optional[subprocess.Popen]:
+def start_docker_services() -> bool:
     """Start Docker services using docker-compose."""
     project_root = Path(__file__).parent.parent
     docker_compose_file = project_root / "docker-compose.yml"
@@ -194,111 +193,15 @@ def start_docker_services() -> Optional[subprocess.Popen]:
         if result.returncode != 0:
             print(f"{Colors.RED}Error starting Docker services:{Colors.RESET}")
             print(result.stderr)
-            return None
+            return False
         print(f"{Colors.GREEN}✓ Docker services started{Colors.RESET}")
-        return None  # Docker services run in detached mode
+        return True
     except subprocess.TimeoutExpired:
         print(f"{Colors.RED}Timeout starting Docker services{Colors.RESET}")
-        return None
-    except Exception as e:
-        print(f"{Colors.RED}Error: {e}{Colors.RESET}")
-        return None
-
-
-def check_node() -> bool:
-    """Check if Node.js is installed."""
-    try:
-        result = subprocess.run(
-            ["node", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
-
-
-def check_npm() -> bool:
-    """Check if npm is installed."""
-    try:
-        result = subprocess.run(
-            ["npm", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
-
-
-def install_frontend_dependencies(project_root: Path) -> bool:
-    """Install frontend dependencies if needed."""
-    frontend_dir = project_root / "frontend"
-    node_modules = frontend_dir / "node_modules"
-    
-    if node_modules.exists():
-        return True
-    
-    print(f"{Colors.BLUE}Installing frontend dependencies (this may take a few minutes)...{Colors.RESET}")
-    try:
-        result = subprocess.run(
-            ["npm", "install"],
-            cwd=frontend_dir,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            print(f"{Colors.RED}Error installing frontend dependencies:{Colors.RESET}")
-            print(result.stderr)
-            return False
-        print(f"{Colors.GREEN}✓ Frontend dependencies installed{Colors.RESET}")
-        return True
-    except subprocess.TimeoutExpired:
-        print(f"{Colors.RED}Timeout installing frontend dependencies{Colors.RESET}")
         return False
     except Exception as e:
         print(f"{Colors.RED}Error: {e}{Colors.RESET}")
         return False
-
-
-def start_frontend(project_root: Path) -> Optional[subprocess.Popen]:
-    """Start the Next.js frontend development server."""
-    frontend_dir = project_root / "frontend"
-    
-    if not frontend_dir.exists():
-        print(f"{Colors.YELLOW}Warning: frontend directory not found. Skipping frontend.{Colors.RESET}")
-        return None
-    
-    # Check if dependencies are installed
-    if not (frontend_dir / "node_modules").exists():
-        if not install_frontend_dependencies(project_root):
-            print(f"{Colors.YELLOW}Warning: Failed to install frontend dependencies. Skipping frontend.{Colors.RESET}")
-            return None
-    
-    # Set environment variable for API URL
-    env = os.environ.copy()
-    env["NEXT_PUBLIC_API_URL"] = "http://localhost:8081"
-    
-    print(f"{Colors.BLUE}Starting frontend development server...{Colors.RESET}")
-    try:
-        process = subprocess.Popen(
-            ["npm", "run", "dev"],
-            cwd=frontend_dir,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        print(f"{Colors.GREEN}✓ Frontend server started (PID: {process.pid}){Colors.RESET}")
-        return process
-    except Exception as e:
-        print(f"{Colors.RED}Error starting frontend: {e}{Colors.RESET}")
-        return None
-
-
 
 
 def wait_for_service(name: str, port: int, url: Optional[str] = None, max_wait: int = 120) -> bool:
@@ -364,20 +267,9 @@ def print_status():
     print(f"  - Frontend UI: {Colors.BLUE}http://localhost:3000{Colors.RESET}")
 
 
-def cleanup(processes: List[subprocess.Popen]):
+def cleanup() -> None:
     """Cleanup processes on exit."""
     print(f"\n{Colors.YELLOW}Shutting down services...{Colors.RESET}")
-
-    # Stop frontend process
-    for process in processes:
-        if process and process.poll() is None:
-            try:
-                process.terminate()
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            except Exception:
-                pass
 
     # Stop Docker services (includes all services now)
     project_root = Path(__file__).parent.parent
@@ -412,15 +304,6 @@ def main():
         print(f"{Colors.RED}Error: docker-compose is not available.{Colors.RESET}")
         sys.exit(1)
     
-    # Check Node.js and npm for frontend
-    project_root = Path(__file__).parent.parent
-    frontend_dir = project_root / "frontend"
-    if frontend_dir.exists():
-        if not check_node():
-            print(f"{Colors.YELLOW}Warning: Node.js is not installed. Frontend will not start.{Colors.RESET}")
-        elif not check_npm():
-            print(f"{Colors.YELLOW}Warning: npm is not installed. Frontend will not start.{Colors.RESET}")
-
     # Check if services are already running
     if check_docker_services_running():
         print(f"{Colors.GREEN}Docker services are already running.{Colors.RESET}")
@@ -450,10 +333,10 @@ def main():
         sys.exit(1)
 
     # Start services
-    processes: List[subprocess.Popen] = []
-
     # Start Docker services (includes PostgreSQL + App)
-    start_docker_services()
+    if not start_docker_services():
+        print(f"{Colors.RED}Failed to start Docker services.{Colors.RESET}")
+        sys.exit(1)
 
     # Wait for Docker services to be ready
     print(f"\n{Colors.BLUE}Waiting for services to be ready...{Colors.RESET}")
@@ -461,13 +344,8 @@ def main():
     wait_for_service("Mera AI Application", PORTS["app"], url="http://localhost:8000/status")
     wait_for_service("Edge Proxy", PORTS["edge"], url="http://localhost:8081/healthz")
     
-    # Start frontend
-    project_root = Path(__file__).parent.parent
-    frontend_process = start_frontend(project_root)
-    if frontend_process:
-        processes.append(frontend_process)
-        # Wait for frontend to be ready
-        wait_for_service("Frontend", PORTS["frontend"], url="http://localhost:3000")
+    # Wait for frontend container to be ready
+    wait_for_service("Frontend", PORTS["frontend"], url="http://localhost:3000")
 
     # Print status
     print_status()
@@ -475,14 +353,14 @@ def main():
     print(f"\n{Colors.GREEN}{Colors.BOLD}✓ All services are running!{Colors.RESET}")
     print(f"\n{Colors.BOLD}Next steps:{Colors.RESET}")
     print(f"  - Open UI: {Colors.BLUE}http://localhost:3000{Colors.RESET}")
-    print(f"  - Test the API: {Colors.BLUE}curl http://localhost:8000/status{Colors.RESET}")
+    print(f"  - Test the Edge API: {Colors.BLUE}curl http://localhost:8081/status{Colors.RESET}")
     print(f"  - View API docs: {Colors.BLUE}http://localhost:8000/docs{Colors.RESET}")
-    print(f"  - View logs: {Colors.BLUE}docker-compose logs -f app{Colors.RESET}")
+    print(f"  - View logs: {Colors.BLUE}docker-compose logs -f app edge frontend{Colors.RESET}")
     print(f"\n{Colors.YELLOW}Press Ctrl+C to stop all services.{Colors.RESET}\n")
 
     # Set up signal handlers for graceful shutdown
     def signal_handler(sig, frame):
-        cleanup(processes)
+        cleanup()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -495,7 +373,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        cleanup(processes)
+        cleanup()
 
 
 if __name__ == "__main__":

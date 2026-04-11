@@ -1,6 +1,7 @@
 import axios from 'axios';
+import { getRuntimeApiUrl, setRuntimeApiUrl } from '@/lib/config/runtime';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = getRuntimeApiUrl();
 
 export const apiClient = axios.create({
   baseURL: API_URL,
@@ -8,6 +9,20 @@ export const apiClient = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+apiClient.interceptors.request.use((config) => {
+  config.baseURL = getRuntimeApiUrl();
+  return config;
+});
+
+export function getConfiguredApiUrl(): string {
+  return getRuntimeApiUrl();
+}
+
+export function setConfiguredApiUrl(url: string): void {
+  setRuntimeApiUrl(url);
+  apiClient.defaults.baseURL = getRuntimeApiUrl();
+}
 
 export interface ChatRequest {
   user_id: string;

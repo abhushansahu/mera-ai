@@ -44,10 +44,10 @@ cp env.example .env
 
 #### 3. Start Everything
 
-**Option A: Using the convenience script (Recommended)**
+**Option A: Using the convenience script (Recommended, single command)**
 
 ```bash
-# Single command to start everything (backend + frontend)
+# Single command to start everything in Docker (postgres + app + edge + frontend)
 ./start.sh
 
 # Stop everything
@@ -57,8 +57,8 @@ cp env.example .env
 **Option B: Using docker-compose directly**
 
 ```bash
-# Build and start all services (PostgreSQL + Application)
-docker-compose up -d
+# Build and start all services in Docker
+docker-compose up -d --build
 
 # View logs
 docker-compose logs -f app
