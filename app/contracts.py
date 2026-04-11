@@ -54,11 +54,4 @@ class StatusResponseContract(BaseModel):
     contract_version: str = CONTRACT_VERSION
 
 
-class FeatureFlagsContract(BaseModel):
-    threading: bool
-    per_message_model: bool
-    secure_provider_settings: bool
-    obsidian_advanced: bool
-    rpi_compact_layout: bool
-    obsidian_event_sync: bool
 

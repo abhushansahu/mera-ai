@@ -17,7 +17,7 @@ A self-hosted AI assistant that provides a single interface to chat with multipl
 ### Prerequisites
 
 - Docker and Docker Compose
-- Node.js 18+ and npm (for frontend UI)
+- Node.js 18+ and npm (for Obsidian plugin development)
 - OpenRouter API key ([get one here](https://openrouter.ai/))
 
 ### Setup
@@ -47,7 +47,7 @@ cp env.example .env
 **Option A: Using the convenience script (Recommended, single command)**
 
 ```bash
-# Single command to start everything in Docker (postgres + app + edge + frontend)
+# Single command to start everything in Docker (postgres + app + edge)
 ./start.sh
 
 # Stop everything
@@ -70,9 +70,7 @@ docker-compose ps
 This starts:
 - PostgreSQL (database)
 - Mera AI Application (with all dependencies)
-- Frontend UI (Next.js web interface)
 
-The UI will be available at http://localhost:3000
 The API will be available at http://localhost:8000
 The Edge API proxy will be available at http://localhost:8081
 
@@ -88,14 +86,14 @@ docker-compose down
 
 ## Usage
 
-### Using the Web UI (Recommended)
+### Using the Obsidian Sidecar (Recommended)
 
-The easiest way to interact with Mera AI is through the web interface:
+The primary interaction path is the Obsidian sidecar plugin:
 
-1. Open http://localhost:3000 in your browser
-2. Select or create a space for your project
-3. Start chatting! The UI will show the Research → Plan → Implement workflow in real-time
-4. View agent interactions, memory graphs, and space usage metrics
+1. Install and configure the plugin in `obsidian-plugin/`
+2. Ensure it can reach the edge API (`http://localhost:8081`)
+3. Work in Obsidian; note/session events are streamed automatically to Mera
+4. Query and manage spaces through API endpoints or scripts
 
 ### Chat with AI (API)
 
@@ -292,6 +290,18 @@ Connect your Obsidian vault to provide context from your notes via REST API.
 4. The system will automatically use the vault for retrieval
 
 **Note**: Spaces can have their own vault paths configured.
+
+### Obsidian Sidecar (gRPC)
+
+For sidecar mode, the Obsidian plugin now talks to a local gRPC daemon instead of REST:
+
+1. Start daemon: `python -m app.grpc_daemon`
+2. Build/copy plugin from `obsidian-plugin/` into your vault plugins directory
+3. Configure plugin settings:
+   - gRPC daemon address (default `127.0.0.1:50051`)
+   - user/session values
+   - shared secret if `OBSIDIAN_PLUGIN_SHARED_SECRET` is set
+4. Use plugin `Send heartbeat` action to validate connectivity
 
 ### Multi-Model Support
 

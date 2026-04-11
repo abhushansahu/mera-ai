@@ -58,8 +58,7 @@ Thumbs.db
 # Obsidian plugin
 obsidian-plugin/
 
-# Frontend artifacts (backend image does not need these)
-frontend/
+# Node artifacts (backend image does not need these)
 **/node_modules/
 **/.next/
 

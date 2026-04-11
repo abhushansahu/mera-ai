@@ -15,22 +15,21 @@ Required checks:
 
 ## PR 2: Performance-Oriented Structure
 
-- Narrow Zustand selectors in streaming-heavy components.
-- Remove duplicate thread selection UI ownership from chat body.
 - Async bridge optimization (`run_coroutine_sync`) to avoid per-call event loop creation.
+- Stream path cleanup and dedupe in API/orchestrator.
+- Keep sidecar event endpoints lean and stable.
 
 Required checks:
-- profile one streaming run and compare commit count
-- verify no dropped stream events and no stuck loading state
+- verify no dropped stream events or stale heartbeat behavior
 
 ## PR 3: Contract Unification
 
 - Backend route models aligned to contracts module.
 - Core context source model sourced from shared backend contract.
-- Frontend API/store contract types consolidated.
+- Sidecar payload types aligned to backend contracts.
 
 Required checks:
-- typecheck frontend and plugin
+- typecheck plugin
 - backend request/response schema sanity checks
 - regression pass for Obsidian event ingestion + session fetch
 
@@ -39,10 +38,10 @@ Required checks:
 - Baseline reference: `docs/performance/loc-reduction-baseline.md`
 - Before:
   - backend p50/p95:
-  - frontend commits during stream:
+  - sidecar event/heartbeat p95:
 - After:
   - backend p50/p95:
-  - frontend commits during stream:
+  - sidecar event/heartbeat p95:
 - Net:
   - LOC delta:
   - behavior changes:

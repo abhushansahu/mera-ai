@@ -1,13 +1,10 @@
 import json
 import logging
 import time
-from threading import Lock
-from datetime import datetime
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi import status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -22,8 +19,6 @@ from app.contracts import (
     ChatRequestContract,
     ChatResponseContract,
     ContextSourceContract,
-    FeatureFlagsContract,
-    ObsidianContextEventContract,
     StatusResponseContract,
 )
 from app.db import Base, engine, get_db
@@ -36,16 +31,11 @@ from app.adapters.chroma import close_embedding_client
 from app.adapters.obsidian import ObsidianClient
 from app.auth import AuthPrincipal, get_optional_principal
 from app.multi_agent_context_system import close_production_resources
-from app.spaces import SpaceConfig, SpaceManager, SpaceStatus, SpaceUsage
+from app.spaces import SpaceConfig, SpaceManager
 # Import models to ensure they're registered with SQLAlchemy Base
-from app.models import ConversationMessage, ConversationThread, ProviderCredential, SpaceRecord, SpaceUsageRecord  # noqa: F401
-from app.services.credential_service import upsert_provider_key
+from app.models import ConversationThread, SpaceRecord, SpaceUsageRecord  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-_OBSIDIAN_CONTEXT_LOCK = Lock()
-_OBSIDIAN_CONTEXT_SESSIONS: Dict[str, Dict[str, Any]] = {}
-
 
 class ChatRequest(ChatRequestContract):
     pass
@@ -131,98 +121,8 @@ class SpaceUsageResponse(BaseModel):
     tokens_remaining: int
 
 
-class ThreadCreateRequest(BaseModel):
-    user_id: Optional[str] = None
-    space_id: Optional[str] = None
-    title: Optional[str] = None
-
-
-class ThreadRenameRequest(BaseModel):
-    user_id: Optional[str] = None
-    title: str
-
-
-class ThreadResponse(BaseModel):
-    id: str
-    user_id: str
-    space_id: Optional[str] = None
-    title: str
-    archived: bool
-    created_at: str
-    updated_at: str
-
-
-class MessageResponse(BaseModel):
-    id: str
-    user_id: str
-    thread_id: str
-    role: str
-    content: str
-    created_at: str
-    metadata: Dict[str, Any]
-
-
-class ProviderKeyUpsertRequest(BaseModel):
-    owner_id: Optional[str] = None
-    provider: str
-    api_key: str
-
-
-class ProviderKeyResponse(BaseModel):
-    owner_id: str
-    provider: str
-    key_version: str
-    last4: str
-    is_active: bool
-    updated_at: str
-
-
-class ObsidianLinkRequest(BaseModel):
-    user_id: Optional[str] = None
-    thread_id: str
-    note_path: str
-    summary: Optional[str] = None
-
-
 class ObsidianIndexRequest(BaseModel):
     prefixes: List[str] = Field(default_factory=lambda: ["Wiki"])
-
-
-class ObsidianContextEventRequest(ObsidianContextEventContract):
-    pass
-
-
-class ObsidianContextIngestRequest(BaseModel):
-    user_id: Optional[str] = None
-    space_id: Optional[str] = None
-    session_id: Optional[str] = None
-    event: ObsidianContextEventRequest
-
-
-class ObsidianContextHeartbeatRequest(BaseModel):
-    user_id: Optional[str] = None
-    space_id: Optional[str] = None
-    session_id: Optional[str] = None
-    active_note_path: Optional[str] = None
-    active_note_title: Optional[str] = None
-
-
-class ObsidianContextSessionResponse(BaseModel):
-    session_id: str
-    user_id: str
-    space_id: Optional[str] = None
-    active_note_path: Optional[str] = None
-    active_note_title: Optional[str] = None
-    active_selection: Optional[str] = None
-    recent_events: List[Dict[str, Any]] = Field(default_factory=list)
-    last_event_at: Optional[str] = None
-    plugin_connected: bool = False
-    last_heartbeat_at: Optional[str] = None
-    last_heartbeat_age_ms: Optional[int] = None
-
-
-class FeatureFlagsResponse(FeatureFlagsContract):
-    pass
 
 
 def create_app() -> FastAPI:
@@ -381,18 +281,6 @@ def create_app() -> FastAPI:
     async def contract_version() -> Dict[str, str]:
         return {"contract_version": CONTRACT_VERSION}
 
-    @app.get("/features", response_model=FeatureFlagsResponse)
-    async def get_feature_flags() -> FeatureFlagsResponse:
-        settings = get_settings()
-        return FeatureFlagsResponse(
-            threading=settings.threading_enabled,
-            per_message_model=settings.per_message_model_enabled,
-            secure_provider_settings=settings.secure_settings_enabled,
-            obsidian_advanced=settings.obsidian_advanced_enabled,
-            rpi_compact_layout=settings.rpi_compact_layout_enabled,
-            obsidian_event_sync=settings.obsidian_event_sync_enabled,
-        )
-
     def _effective_user_id(principal: AuthPrincipal, provided_user_id: Optional[str]) -> str:
         if provided_user_id and provided_user_id != principal.user_id and not principal.is_service:
             raise HTTPException(status_code=403, detail="User identity mismatch.")
@@ -421,20 +309,8 @@ def create_app() -> FastAPI:
             parsed.append(ContextSource(**{**source_payload, "type": source_type}))
         return parsed
 
-    def _obsidian_session_key(user_id: str, space_id: Optional[str], session_id: Optional[str]) -> str:
-        return f"{user_id}:{space_id or 'global'}:{session_id or 'default'}"
-
     def _sse_event(payload: Dict[str, Any]) -> str:
         return f"data: {json.dumps(payload)}\n\n"
-
-    def _assert_obsidian_plugin_auth(req: Request) -> None:
-        settings = get_settings()
-        required = (settings.obsidian_plugin_shared_secret or "").strip()
-        if not required:
-            return
-        provided = req.headers.get("x-obsidian-plugin-secret", "").strip()
-        if not provided or provided != required:
-            raise HTTPException(status_code=401, detail="Invalid Obsidian plugin secret.")
 
     async def _ensure_thread(
         db: AsyncSession,
@@ -967,325 +843,6 @@ def create_app() -> FastAPI:
             logger.error(f"Error deleting space: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/settings/providers/key", response_model=ProviderKeyResponse)
-    async def upsert_provider_key_endpoint(
-        request: ProviderKeyUpsertRequest,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> ProviderKeyResponse:
-        settings = get_settings()
-        if not settings.secure_settings_enabled:
-            raise HTTPException(status_code=404, detail="Secure provider settings are disabled.")
-        owner_id = _assert_provider_owner(principal, request.owner_id)
-        try:
-            provider_key = await upsert_provider_key(
-                db,
-                owner_id=owner_id,
-                provider=request.provider,
-                api_key=request.api_key,
-            )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        return ProviderKeyResponse(
-            owner_id=provider_key.owner_id,
-            provider=provider_key.provider,
-            key_version=provider_key.key_version,
-            last4=provider_key.last4,
-            is_active=provider_key.is_active,
-            updated_at=provider_key.updated_at.isoformat(),
-        )
-
-    @app.get("/settings/providers/key", response_model=ProviderKeyResponse)
-    async def get_provider_key_status(
-        provider: str,
-        owner_id: Optional[str] = None,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> ProviderKeyResponse:
-        effective_owner_id = _assert_provider_owner(principal, owner_id)
-        key = await db.scalar(
-            select(ProviderCredential).where(
-                ProviderCredential.owner_id == effective_owner_id,
-                ProviderCredential.provider == provider,
-            )
-        )
-        if key is None:
-            raise HTTPException(status_code=404, detail="Provider key not configured.")
-        return ProviderKeyResponse(
-            owner_id=key.owner_id,
-            provider=key.provider,
-            key_version=key.key_version,
-            last4=key.last4,
-            is_active=key.is_active,
-            updated_at=key.updated_at.isoformat(),
-        )
-
-    @app.post("/threads/create", response_model=ThreadResponse)
-    async def create_thread(
-        request: ThreadCreateRequest,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> ThreadResponse:
-        effective_user_id = _effective_user_id(principal, request.user_id)
-        thread = await _ensure_thread(
-            db,
-            user_id=effective_user_id,
-            space_id=request.space_id,
-            thread_id=None,
-            title_hint=request.title,
-        )
-        return ThreadResponse(**thread.to_dict())
-
-    @app.get("/threads/list", response_model=List[ThreadResponse])
-    async def list_threads(
-        user_id: Optional[str] = None,
-        space_id: Optional[str] = None,
-        include_archived: bool = False,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> List[ThreadResponse]:
-        effective_user_id = _effective_user_id(principal, user_id)
-        query = select(ConversationThread).where(ConversationThread.user_id == effective_user_id)
-        if space_id is not None:
-            query = query.where(ConversationThread.space_id == space_id)
-        if not include_archived:
-            query = query.where(ConversationThread.archived.is_(False))
-        query = query.order_by(ConversationThread.updated_at.desc())
-        rows = await db.scalars(query)
-        return [ThreadResponse(**row.to_dict()) for row in rows.all()]
-
-    @app.get("/threads/{thread_id}/messages", response_model=List[MessageResponse])
-    async def list_thread_messages(
-        thread_id: str,
-        user_id: Optional[str] = None,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> List[MessageResponse]:
-        effective_user_id = _effective_user_id(principal, user_id)
-        thread = await db.scalar(
-            select(ConversationThread).where(
-                ConversationThread.id == thread_id,
-                ConversationThread.user_id == effective_user_id,
-            )
-        )
-        if thread is None:
-            raise HTTPException(status_code=404, detail="Thread not found.")
-        messages = await db.scalars(
-            select(ConversationMessage)
-            .where(ConversationMessage.thread_id == thread_id)
-            .order_by(ConversationMessage.created_at.asc())
-        )
-        return [MessageResponse(**message.to_dict()) for message in messages.all()]
-
-    @app.post("/threads/{thread_id}/rename", response_model=ThreadResponse)
-    async def rename_thread(
-        thread_id: str,
-        request: ThreadRenameRequest,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> ThreadResponse:
-        effective_user_id = _effective_user_id(principal, request.user_id)
-        thread = await db.scalar(
-            select(ConversationThread).where(
-                ConversationThread.id == thread_id,
-                ConversationThread.user_id == effective_user_id,
-            )
-        )
-        if thread is None:
-            raise HTTPException(status_code=404, detail="Thread not found.")
-        thread.title = request.title.strip()[:80] or "Untitled Thread"
-        thread.updated_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(thread)
-        return ThreadResponse(**thread.to_dict())
-
-    @app.post("/threads/{thread_id}/archive", response_model=ThreadResponse)
-    async def archive_thread(
-        thread_id: str,
-        user_id: Optional[str] = None,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> ThreadResponse:
-        effective_user_id = _effective_user_id(principal, user_id)
-        thread = await db.scalar(
-            select(ConversationThread).where(
-                ConversationThread.id == thread_id,
-                ConversationThread.user_id == effective_user_id,
-            )
-        )
-        if thread is None:
-            raise HTTPException(status_code=404, detail="Thread not found.")
-        thread.archived = True
-        thread.updated_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(thread)
-        return ThreadResponse(**thread.to_dict())
-
-    @app.post("/obsidian/context/events")
-    async def ingest_obsidian_context_event(
-        request: ObsidianContextIngestRequest,
-        http_request: Request,
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> Dict[str, Any]:
-        _assert_obsidian_plugin_auth(http_request)
-        effective_user_id = _effective_user_id(principal, request.user_id)
-        now = datetime.utcnow()
-        event = request.event
-        normalized_type = (event.event_type or "").strip().lower()
-        if normalized_type not in {"open", "click", "selection", "navigate"}:
-            raise HTTPException(status_code=422, detail=f"Unsupported Obsidian event type: {event.event_type}")
-
-        event_payload = {
-            "event_id": event.event_id or str(uuid4()),
-            "event_type": normalized_type,
-            "note_path": event.note_path,
-            "note_title": event.note_title,
-            "selection": event.selection,
-            "clicked_target": event.clicked_target,
-            "cursor_line": event.cursor_line,
-            "event_ts_ms": event.event_ts_ms or int(time.time() * 1000),
-            "metadata": event.metadata or {},
-            "received_at": now.isoformat(),
-        }
-        key = _obsidian_session_key(
-            user_id=effective_user_id,
-            space_id=request.space_id,
-            session_id=request.session_id,
-        )
-        with _OBSIDIAN_CONTEXT_LOCK:
-            session = _OBSIDIAN_CONTEXT_SESSIONS.get(key) or {
-                "session_id": request.session_id or "default",
-                "user_id": effective_user_id,
-                "space_id": request.space_id,
-                "active_note_path": None,
-                "active_note_title": None,
-                "active_selection": None,
-                "recent_events": [],
-                "last_event_at": None,
-                "last_event_id": None,
-            }
-            if session.get("last_event_id") == event_payload["event_id"]:
-                return {"status": "deduplicated", "session_id": session["session_id"]}
-            session["last_event_id"] = event_payload["event_id"]
-            session["active_note_path"] = event.note_path
-            session["active_note_title"] = event.note_title or session.get("active_note_title")
-            if event.selection is not None:
-                session["active_selection"] = event.selection
-            session["last_event_at"] = now.isoformat()
-            session["last_heartbeat_at"] = now.isoformat()
-            recent = list(session.get("recent_events") or [])
-            recent.append(event_payload)
-            session["recent_events"] = recent[-25:]
-            _OBSIDIAN_CONTEXT_SESSIONS[key] = session
-            recent_count = len(session["recent_events"])
-
-        return {
-            "status": "accepted",
-            "session_id": request.session_id or "default",
-            "active_note_path": event.note_path,
-            "recent_events": recent_count,
-        }
-
-    @app.post("/obsidian/context/heartbeat")
-    async def obsidian_context_heartbeat(
-        request: ObsidianContextHeartbeatRequest,
-        http_request: Request,
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> Dict[str, Any]:
-        _assert_obsidian_plugin_auth(http_request)
-        effective_user_id = _effective_user_id(principal, request.user_id)
-        now = datetime.utcnow()
-        key = _obsidian_session_key(
-            user_id=effective_user_id,
-            space_id=request.space_id,
-            session_id=request.session_id,
-        )
-        with _OBSIDIAN_CONTEXT_LOCK:
-            session = _OBSIDIAN_CONTEXT_SESSIONS.get(key) or {
-                "session_id": request.session_id or "default",
-                "user_id": effective_user_id,
-                "space_id": request.space_id,
-                "active_note_path": None,
-                "active_note_title": None,
-                "active_selection": None,
-                "recent_events": [],
-                "last_event_at": None,
-                "last_event_id": None,
-                "last_heartbeat_at": None,
-            }
-            session["last_heartbeat_at"] = now.isoformat()
-            if request.active_note_path:
-                session["active_note_path"] = request.active_note_path
-            if request.active_note_title:
-                session["active_note_title"] = request.active_note_title
-            _OBSIDIAN_CONTEXT_SESSIONS[key] = session
-        return {"status": "ok", "session_id": request.session_id or "default"}
-
-    @app.get("/obsidian/context/session", response_model=ObsidianContextSessionResponse)
-    async def get_obsidian_context_session(
-        user_id: Optional[str] = None,
-        space_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> ObsidianContextSessionResponse:
-        effective_user_id = _effective_user_id(principal, user_id)
-        key = _obsidian_session_key(effective_user_id, space_id, session_id)
-        now = datetime.utcnow()
-
-        def _heartbeat_age_ms(value: Optional[str]) -> Optional[int]:
-            if not value:
-                return None
-            try:
-                then = datetime.fromisoformat(value)
-                return int((now - then).total_seconds() * 1000)
-            except Exception:
-                return None
-
-        with _OBSIDIAN_CONTEXT_LOCK:
-            existing = _OBSIDIAN_CONTEXT_SESSIONS.get(key)
-            if not existing:
-                return ObsidianContextSessionResponse(
-                    session_id=session_id or "default",
-                    user_id=effective_user_id,
-                    space_id=space_id,
-                )
-            heartbeat_age_ms = _heartbeat_age_ms(existing.get("last_heartbeat_at"))
-            return ObsidianContextSessionResponse(
-                **existing,
-                plugin_connected=bool(heartbeat_age_ms is not None and heartbeat_age_ms <= 10_000),
-                last_heartbeat_age_ms=heartbeat_age_ms,
-            )
-
-    @app.post("/obsidian/threads/link")
-    async def link_thread_to_obsidian(
-        request: ObsidianLinkRequest,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> Dict[str, Any]:
-        effective_user_id = _effective_user_id(principal, request.user_id)
-        thread = await db.scalar(
-            select(ConversationThread).where(
-                ConversationThread.id == request.thread_id,
-                ConversationThread.user_id == effective_user_id,
-            )
-        )
-        if thread is None:
-            raise HTTPException(status_code=404, detail="Thread not found.")
-        messages = await db.scalars(
-            select(ConversationMessage)
-            .where(ConversationMessage.thread_id == request.thread_id)
-            .order_by(ConversationMessage.created_at.asc())
-        )
-        transcript = "\n\n".join([f"## {m.role}\n{m.content}" for m in messages.all()])
-        note_body = request.summary or f"# {thread.title}\n\n{transcript}"
-        obsidian = ObsidianClient()
-        await obsidian.upsert_note(request.note_path, note_body)
-        return {
-            "status": "linked",
-            "note_path": request.note_path,
-            "deep_link": f"obsidian://open?vault=main&file={request.note_path.replace(' ', '%20')}",
-        }
-
     @app.post("/obsidian/index")
     async def index_obsidian(
         request: ObsidianIndexRequest,
@@ -1380,74 +937,6 @@ def create_app() -> FastAPI:
                 yield _sse_event({"type": "error", "message": str(e)})
         
         return StreamingResponse(generate_stream(), media_type="text/event-stream")
-
-    @app.get("/workflow/{session_id}/agents")
-    async def get_agent_activity(
-        session_id: str,
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> Dict[str, Any]:
-        """Get agent activity for a workflow session."""
-        _ = principal
-        # For now, return static agent info. In future, this can track real-time agent states
-        return {
-            "session_id": session_id,
-            "agents": [
-                {"name": "Researcher", "role": "Research Assistant", "status": "idle", "tools_used": []},
-                {"name": "Planner", "role": "Implementation Planner", "status": "idle", "tools_used": []},
-                {"name": "Implementer", "role": "Implementation Executor", "status": "idle", "tools_used": []},
-            ],
-            "workflow_stage": "idle",
-        }
-
-    @app.get("/spaces/{space_id}/visualization")
-    async def get_space_visualization(
-        space_id: str,
-        month: Optional[str] = None,
-        db: AsyncSession = Depends(get_db),
-        principal: AuthPrincipal = Depends(get_optional_principal),
-    ) -> Dict[str, Any]:
-        """Get visualization data for a space."""
-        if not database_connected:
-            raise HTTPException(status_code=503, detail="Database is not connected.")
-        
-        space_manager = SpaceManager(db)
-        try:
-            await space_manager.switch_space(space_id)
-            space_config = space_manager.get_current_space()
-            if space_config.owner_id != principal.user_id and not principal.is_service:
-                raise HTTPException(status_code=403, detail="Not authorized for this space.")
-            usage = await space_manager.get_space_usage(space_id, month=month)
-            
-            # Get memory connections (simplified - can be enhanced)
-            from app.adapters.chroma import ChromaMemoryAdapter
-            from app.config import get_settings
-            settings = get_settings()
-            memory = ChromaMemoryAdapter(
-                host=settings.chroma_host,
-                port=settings.chroma_port,
-                collection_name=space_config.mem0_collection_name,
-                persist_directory=settings.chroma_persist_dir,
-            )
-            
-            # Sample recent memories for graph
-            recent_memories = await memory.search(user_id="*", query="", limit=20)
-            
-            return {
-                "space_id": space_id,
-                "usage": {
-                    "tokens_used": usage.tokens_used,
-                    "api_calls_used": usage.api_calls_used,
-                    "cost_usd": float(usage.cost_usd),
-                    "tokens_remaining": usage.get_budget_remaining(space_config),
-                },
-                "memory_count": len(recent_memories),
-                "memories": [{"id": i, "text": m.text[:100], "score": m.score} for i, m in enumerate(recent_memories)],
-            }
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        except Exception as e:
-            logger.error(f"Error getting space visualization: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
 
     return app
 
