@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: str = Field(...)
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1")
     default_model: str = Field(default="openai/gpt-4o-mini")
+    fallback_models: Optional[str] = Field(default=None, description="Comma-separated fallback OpenRouter models")
 
     chroma_host: Optional[str] = Field(default=None)
     chroma_port: int = Field(default=8000)

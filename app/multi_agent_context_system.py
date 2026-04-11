@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -8,9 +10,41 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 import httpx
+from aiocache import Cache
+from aiocache.serializers import JsonSerializer
 from app.observability import observe_langsmith
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
+
+_cache: Optional[Cache] = None
+
+
+async def _get_cache() -> Cache:
+    global _cache
+    if _cache is None:
+        _cache = Cache(Cache.MEMORY, serializer=JsonSerializer(), namespace="mera_ai", timeout=None)
+    return _cache
+
+
+def _make_key(prefix: str, *args: Any, **kwargs: Any) -> str:
+    key_data = {"prefix": prefix, "args": args, "kwargs": sorted(kwargs.items()) if kwargs else {}}
+    return hashlib.sha256(json.dumps(key_data, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def _get_cached(prefix: str, key_args: tuple) -> Optional[Any]:
+    try:
+        cache = await _get_cache()
+        return await cache.get(_make_key(prefix, *key_args))
+    except Exception:
+        return None
+
+
+async def _set_cached(prefix: str, key_args: tuple, value: Any, ttl: int = 1800) -> None:
+    try:
+        cache = await _get_cache()
+        await cache.set(_make_key(prefix, *key_args), value, ttl=ttl)
+    except Exception:
+        pass
 
 
 class ContextSourceType(str, Enum):
@@ -230,7 +264,7 @@ class MultiAgentCoordinator:
 
             async def fetch_single_url(url: str) -> str:
                 cache_key = ("url_fetch", url)
-                cached_content = await get_cached("url_fetch", cache_key)
+                cached_content = await _get_cached("url_fetch", cache_key)
                 if cached_content is not None:
                     return cached_content
                 
@@ -241,7 +275,7 @@ class MultiAgentCoordinator:
                     if len(content) > 50000:
                         content = content[:50000] + "\n\n[... truncated ...]"
                     result = f"## URL: {url}\n\n```\n{content}\n```"
-                    await set_cached("url_fetch", cache_key, result, ttl=1800)
+                    await _set_cached("url_fetch", cache_key, result, ttl=1800)
                     return result
                 except httpx.RequestError as e:
                     return f"Error fetching {url}: Network error - {e}"
@@ -305,7 +339,13 @@ class MultiAgentCoordinator:
                 memories = await mem0_wrapper.search(user_id=user_id, query=query, limit=5)
                 if not memories:
                     return f"No relevant memories found for '{identifier}'"
-                mem_texts = [m.get("text", "") for m in memories if m.get("text")]
+                mem_texts = [
+                    m.get("text", "")
+                    if isinstance(m, dict)
+                    else getattr(m, "text", "")
+                    for m in memories
+                ]
+                mem_texts = [m for m in mem_texts if m]
                 return "\n\n".join(mem_texts)
             except Exception as e:
                 return f"Error retrieving memory: {e}"

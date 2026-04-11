@@ -52,12 +52,25 @@ class AddMemoryRequest(BaseModel):
     user_id: str
     messages: str | list[dict[str, str]]
     metadata: Optional[dict] = None
+    space_id: Optional[str] = None
 
 
 class SearchMemoryRequest(BaseModel):
     user_id: str
     query: str
     limit: int = 5
+    space_id: Optional[str] = None
+
+
+class WikiLintRequest(BaseModel):
+    save_report: bool = True
+
+
+class WikiLintResponse(BaseModel):
+    space_id: str
+    total_notes: int
+    summary: Dict[str, int]
+    issues: Dict[str, List[str]]
 
 
 class CreateSpaceRequest(BaseModel):
@@ -214,18 +227,31 @@ def create_app() -> FastAPI:
             metadata=result.metadata,
         )
 
-    @app.post("/mem0/add")
-    async def add_memory(request: AddMemoryRequest) -> Dict[str, str]:
+    async def _memory_adapter_for_optional_space(
+        space_id: Optional[str],
+        db: AsyncSession,
+    ):
         from app.adapters.chroma import ChromaMemoryAdapter
         from app.config import get_settings
+
+        settings = get_settings()
+        collection_name = settings.chroma_collection_name
+        if space_id:
+            space_manager = SpaceManager(db)
+            await space_manager.switch_space(space_id)
+            config = space_manager.get_current_space()
+            collection_name = config.mem0_collection_name
+        return ChromaMemoryAdapter(
+            host=settings.chroma_host,
+            port=settings.chroma_port,
+            collection_name=collection_name,
+            persist_directory=settings.chroma_persist_dir,
+        )
+
+    @app.post("/mem0/add")
+    async def add_memory(request: AddMemoryRequest, db: AsyncSession = Depends(get_db)) -> Dict[str, str]:
         try:
-            settings = get_settings()
-            memory = ChromaMemoryAdapter(
-                host=settings.chroma_host,
-                port=settings.chroma_port,
-                collection_name=settings.chroma_collection_name,
-                persist_directory=settings.chroma_persist_dir,
-            )
+            memory = await _memory_adapter_for_optional_space(request.space_id, db)
             await memory.store(
                 user_id=request.user_id,
                 text=request.messages if isinstance(request.messages, str) else str(request.messages),
@@ -236,17 +262,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/mem0/search")
-    async def search_memories(request: SearchMemoryRequest) -> Dict[str, Any]:
-        from app.adapters.chroma import ChromaMemoryAdapter
-        from app.config import get_settings
+    async def search_memories(request: SearchMemoryRequest, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
         try:
-            settings = get_settings()
-            memory = ChromaMemoryAdapter(
-                host=settings.chroma_host,
-                port=settings.chroma_port,
-                collection_name=settings.chroma_collection_name,
-                persist_directory=settings.chroma_persist_dir,
-            )
+            memory = await _memory_adapter_for_optional_space(request.space_id, db)
             memories = await memory.search(
                 user_id=request.user_id,
                 query=request.query,
@@ -258,17 +276,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/mem0/get_all/{user_id}")
-    async def get_all_memories(user_id: str, limit: int = 100) -> Dict[str, Any]:
-        from app.adapters.chroma import ChromaMemoryAdapter
-        from app.config import get_settings
+    async def get_all_memories(
+        user_id: str,
+        limit: int = 100,
+        space_id: Optional[str] = None,
+        db: AsyncSession = Depends(get_db),
+    ) -> Dict[str, Any]:
         try:
-            settings = get_settings()
-            memory = ChromaMemoryAdapter(
-                host=settings.chroma_host,
-                port=settings.chroma_port,
-                collection_name=settings.chroma_collection_name,
-                persist_directory=settings.chroma_persist_dir,
-            )
+            memory = await _memory_adapter_for_optional_space(space_id, db)
             memories = await memory.search(
                 user_id=user_id,
                 query="",
@@ -442,6 +457,32 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             logger.error(f"Error getting space usage: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/spaces/{space_id}/wiki/lint", response_model=WikiLintResponse)
+    async def lint_space_wiki(
+        space_id: str,
+        request: WikiLintRequest,
+        db: AsyncSession = Depends(get_db),
+    ) -> WikiLintResponse:
+        """Run wiki health checks for a space and optionally persist a report."""
+        if not database_connected:
+            raise HTTPException(status_code=503, detail="Database is not connected.")
+        space_manager = SpaceManager(db)
+        try:
+            space_config = await space_manager.switch_space(space_id)
+            space_obsidian = ObsidianClient(vault_path=space_config.obsidian_vault_path)
+            lint_result = await orchestrator.lint_space_wiki(obsidian=space_obsidian, save_report=request.save_report)
+            return WikiLintResponse(
+                space_id=space_id,
+                total_notes=lint_result.get("total_notes", 0),
+                summary=lint_result.get("summary", {}),
+                issues=lint_result.get("issues", {}),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error running wiki lint: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.delete("/spaces/{space_id}")

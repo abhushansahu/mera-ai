@@ -1,9 +1,11 @@
 """Obsidian integration via Local REST API plugin."""
 
+import asyncio
 import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -85,6 +87,98 @@ class ObsidianAdapter:
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.warning(f"Obsidian API error (create_note): {e}")
+
+    def _normalize_note_path(self, note_path: str) -> str:
+        cleaned = note_path.strip().replace("\\", "/")
+        if cleaned.startswith("/"):
+            cleaned = cleaned[1:]
+        if not cleaned.endswith(".md"):
+            cleaned += ".md"
+        return cleaned
+
+    def _local_vault_root(self) -> Optional[Path]:
+        # If the vault path is local, we can directly manage markdown files.
+        if not self.vault_path:
+            return None
+        try:
+            vault_root = Path(self.vault_path).expanduser().resolve()
+            vault_root.mkdir(parents=True, exist_ok=True)
+            return vault_root
+        except Exception:
+            return None
+
+    async def upsert_note(self, note_path: str, content: str) -> None:
+        normalized = self._normalize_note_path(note_path)
+        local_root = self._local_vault_root()
+        if local_root is not None:
+            full_path = local_root / normalized
+            await asyncio.to_thread(lambda: full_path.parent.mkdir(parents=True, exist_ok=True))
+            await asyncio.to_thread(full_path.write_text, content, "utf-8")
+            return
+
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            client = await self._get_client()
+            payload = {"path": normalized, "content": content}
+            if self.vault_path:
+                payload["vault"] = self.vault_path
+            response = await client.post(f"{self.base_url}/vault/create", headers=headers, json=payload)
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            logger.warning(f"Obsidian API error (upsert_note): {e}")
+
+    async def append_note(self, note_path: str, content: str) -> None:
+        normalized = self._normalize_note_path(note_path)
+        local_root = self._local_vault_root()
+        if local_root is not None:
+            full_path = local_root / normalized
+            await asyncio.to_thread(lambda: full_path.parent.mkdir(parents=True, exist_ok=True))
+            existing = ""
+            if full_path.exists():
+                existing = await asyncio.to_thread(full_path.read_text, "utf-8")
+            joined = f"{existing}\n{content}".strip() + "\n"
+            await asyncio.to_thread(full_path.write_text, joined, "utf-8")
+            return
+
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            client = await self._get_client()
+            payload = {"path": normalized, "content": content}
+            if self.vault_path:
+                payload["vault"] = self.vault_path
+            response = await client.post(f"{self.base_url}/vault/append", headers=headers, json=payload)
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            logger.warning(f"Obsidian API error (append_note): {e}")
+
+    async def read_note(self, note_path: str) -> str:
+        normalized = self._normalize_note_path(note_path)
+        local_root = self._local_vault_root()
+        if local_root is not None:
+            full_path = local_root / normalized
+            if not full_path.exists():
+                return ""
+            try:
+                return await asyncio.to_thread(full_path.read_text, "utf-8")
+            except Exception as e:
+                logger.warning(f"Failed reading local note {normalized}: {e}")
+                return ""
+        return ""
+
+    async def list_notes(self, prefix: str = "") -> List[str]:
+        local_root = self._local_vault_root()
+        if local_root is None:
+            return []
+        clean_prefix = prefix.strip().replace("\\", "/").strip("/")
+        target = local_root / clean_prefix if clean_prefix else local_root
+        if not target.exists():
+            return []
+        files = await asyncio.to_thread(lambda: sorted(target.rglob("*.md")))
+        return [str(f.relative_to(local_root)).replace("\\", "/") for f in files]
 
     async def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         cache_key = (query, limit)

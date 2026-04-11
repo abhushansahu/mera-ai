@@ -31,6 +31,9 @@ MEMORIES:
 OBSIDIAN CONTEXT:
 {obsidian_context}
 
+CONTEXT SOURCE FINDINGS:
+{context_findings}
+
 OUTPUT: A concise markdown document named 'research.md' with sections:
 1. Problem Statement
 2. Key Context and Constraints
@@ -317,12 +320,19 @@ def create_agents_for_space(
 
 
 # Tasks
-def create_research_task(researcher_agent: Agent, query: str, memories: str = "", obsidian_context: str = "") -> Task:
+def create_research_task(
+    researcher_agent: Agent,
+    query: str,
+    memories: str = "",
+    obsidian_context: str = "",
+    context_findings: str = "",
+) -> Task:
     """Create Research Task."""
     description = RESEARCH_PROMPT.format(
         query=query,
         memories=memories or "No memories found.",
         obsidian_context=obsidian_context or "No Obsidian context found.",
+        context_findings=context_findings or "No explicit context sources provided.",
     )
     return Task(
         description=description,
@@ -374,9 +384,16 @@ def create_tasks_for_workflow(
     query: str,
     memories: str = "",
     obsidian_context: str = "",
+    context_findings: str = "",
 ) -> tuple[Task, Task, Task]:
     """Create all three tasks (Research, Plan, Implement) for a workflow."""
-    research_task = create_research_task(researcher_agent=researcher_agent, query=query, memories=memories, obsidian_context=obsidian_context)
+    research_task = create_research_task(
+        researcher_agent=researcher_agent,
+        query=query,
+        memories=memories,
+        obsidian_context=obsidian_context,
+        context_findings=context_findings,
+    )
     plan_task = create_plan_task(planner_agent=planner_agent, query=query, research_output="")
     plan_task.context = [research_task]
     implement_task = create_implement_task(implementer_agent=implementer_agent, query=query, research_output="", plan_output="")
