@@ -77,11 +77,21 @@ func (cfg proxyConfig) dispatch(w http.ResponseWriter, r *http.Request) {
 
 func isAllowedPath(path string) bool {
 	switch {
-	case path == "/status", path == "/chat", path == "/contracts/version":
+	case path == "/status", path == "/chat", path == "/contracts/version", path == "/features":
 		return true
 	case path == "/docs", path == "/redoc", path == "/openapi.json", path == "/docs/oauth2-redirect":
 		return true
 	case len(path) >= len("/spaces/") && path[:len("/spaces/")] == "/spaces/":
+		return true
+	case len(path) >= len("/threads/") && path[:len("/threads/")] == "/threads/":
+		return true
+	case len(path) >= len("/settings/") && path[:len("/settings/")] == "/settings/":
+		return true
+	case len(path) >= len("/workflow/") && path[:len("/workflow/")] == "/workflow/":
+		return true
+	case path == "/obsidian/context/session", path == "/obsidian/context/events", path == "/obsidian/context/heartbeat":
+		return true
+	case len(path) >= len("/obsidian/") && path[:len("/obsidian/")] == "/obsidian/":
 		return true
 	case len(path) >= len("/mem0/") && path[:len("/mem0/")] == "/mem0/":
 		return true

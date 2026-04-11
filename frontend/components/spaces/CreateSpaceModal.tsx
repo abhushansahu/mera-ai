@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { chatApi } from '@/lib/api/client';
 import { Space } from '@/store/useAppStore';
+import { getRuntimeUserId } from '@/lib/config/runtime';
 
 interface CreateSpaceModalProps {
   isOpen: boolean;
@@ -13,11 +14,26 @@ interface CreateSpaceModalProps {
 export function CreateSpaceModal({ isOpen, onClose, onCreated }: CreateSpaceModalProps) {
   const [name, setName] = useState('');
   const [spaceId, setSpaceId] = useState('');
-  const [ownerId, setOwnerId] = useState('default-user');
+  const [ownerId, setOwnerId] = useState(getRuntimeUserId());
   const [monthlyTokenBudget, setMonthlyTokenBudget] = useState(1000000);
   const [preferredModel, setPreferredModel] = useState('openai/gpt-4o-mini');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const titleId = 'create-space-dialog-title';
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+    dialogRef.current?.focus();
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -50,10 +66,21 @@ export function CreateSpaceModal({ isOpen, onClose, onCreated }: CreateSpaceModa
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6 animate-slide-up">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6 animate-slide-up"
+      >
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Create Space</h2>
+          <h2 id={titleId} className="text-2xl font-bold text-gray-900 dark:text-white">Create Space</h2>
           <button
             onClick={onClose}
             className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"

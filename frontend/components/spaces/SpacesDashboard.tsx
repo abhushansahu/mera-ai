@@ -4,12 +4,22 @@ import { useEffect, useState } from 'react';
 import { useAppStore, Space } from '@/store/useAppStore';
 import { chatApi } from '@/lib/api/client';
 import { CreateSpaceModal } from './CreateSpaceModal';
+import { shallow } from 'zustand/shallow';
 
 export function SpacesDashboard() {
-  const { spaces, setSpaces, currentSpace, setCurrentSpace } = useAppStore();
+  const { spaces, setSpaces, currentSpace, setCurrentSpace } = useAppStore(
+    (state) => ({
+      spaces: state.spaces,
+      setSpaces: state.setSpaces,
+      currentSpace: state.currentSpace,
+      setCurrentSpace: state.setCurrentSpace,
+    }),
+    shallow
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [refreshCounter, setRefreshCounter] = useState(0);
 
   useEffect(() => {
     const loadSpaces = async () => {
@@ -26,7 +36,7 @@ export function SpacesDashboard() {
       }
     };
     loadSpaces();
-  }, [setSpaces]);
+  }, [refreshCounter, setSpaces]);
 
   const handleSelectSpace = (space: Space) => {
     setCurrentSpace(space);
@@ -48,7 +58,7 @@ export function SpacesDashboard() {
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
           <p className="text-red-800 dark:text-red-200">Error: {error}</p>
           <button
-            onClick={() => window.location.reload()}
+            onClick={() => setRefreshCounter((value) => value + 1)}
             className="mt-2 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
           >
             Retry
@@ -99,7 +109,8 @@ export function SpacesDashboard() {
       />
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {spaces.map((space) => (
-          <div
+          <button
+            type="button"
             key={space.space_id}
             className={`border rounded-lg p-4 cursor-pointer transition-all hover:shadow-lg ${
               currentSpace?.space_id === space.space_id
@@ -107,6 +118,12 @@ export function SpacesDashboard() {
                 : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600'
             }`}
             onClick={() => handleSelectSpace(space)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                handleSelectSpace(space);
+              }
+            }}
           >
             <h3 className="font-bold text-lg text-gray-900 dark:text-white">{space.name}</h3>
             <p className="text-sm text-gray-600 dark:text-gray-400">{space.space_id}</p>
@@ -121,7 +138,7 @@ export function SpacesDashboard() {
                 Model: <span className="font-medium">{space.preferred_model}</span>
               </div>
             </div>
-          </div>
+          </button>
         ))}
       </div>
     </div>

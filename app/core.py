@@ -1,18 +1,18 @@
 """Core types, protocols, and exceptions for Mera AI."""
 
-from typing import Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 from pydantic import BaseModel, Field
+
+from app.contracts import ContextSourceContract
 
 # Type aliases
 UserID = str
 Query = str
 
 # Data models
-class ContextSource(BaseModel):
-    type: str = Field(...)
-    path: str = Field(...)
-    extra: Optional[Dict[str, str]] = Field(default=None)
+class ContextSource(ContextSourceContract):
+    pass
 
 
 class Memory(BaseModel):
@@ -84,6 +84,7 @@ class Orchestrator(Protocol):
         user_id: UserID,
         query: Query,
         model: Optional[str] = None,
+        provider: Optional[str] = None,
         context_sources: Optional[List[ContextSource]] = None,
         **kwargs,
     ) -> WorkflowResult:

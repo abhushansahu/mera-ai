@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import time
+from uuid import NAMESPACE_URL, uuid5
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -26,18 +27,17 @@ from app.core import ContextSource, LLMMessage, Orchestrator, Query, UserID, Wor
 from app.crewai import create_agents_for_space, create_tasks_for_workflow
 from app.models import ConversationMessage
 from app.multi_agent_context_system import (
-    ContextSource as CoordinatorContextSource,
-    ContextSourceType,
-    ContextSpecification,
     MultiAgentCoordinator,
 )
 from app.observability import observe_langsmith
 from app.performance import TimingCollector, log_timing_summary
 from app.services.context_boundary_service import CoordinatorContextBoundary
 from app.services.memory_boundary_service import ChromaMemoryBoundary
+from app.services.credential_service import decrypt_secret, get_provider_credential
 from app.spaces import SpaceConfig, SpaceManager
 
 logger = logging.getLogger(__name__)
+SUPPORTED_PROVIDERS = {"openrouter", "lmstudio", "cursor-local"}
 
 
 def _estimate_tokens(content: Any) -> int:
@@ -78,27 +78,80 @@ def _parse_fallback_models(settings: Any, primary_model: str) -> List[str]:
     return candidates
 
 
-def _map_context_source_type(source_type: str) -> Optional[ContextSourceType]:
-    normalized = (source_type or "").strip().upper()
-    aliases = {
-        "FILE": ContextSourceType.FILE,
-        "DIRECTORY": ContextSourceType.DIRECTORY,
-        "URL": ContextSourceType.URL,
-        "API": ContextSourceType.API,
-        "DATABASE": ContextSourceType.DATABASE,
-        "MEMORY": ContextSourceType.MEMORY,
-    }
-    return aliases.get(normalized)
+def _normalize_provider(provider: Optional[str], model: str) -> str:
+    if provider and provider.strip():
+        normalized = provider.strip().lower()
+    else:
+        lowered_model = (model or "").strip().lower()
+        if lowered_model.startswith("lmstudio/"):
+            normalized = "lmstudio"
+        elif lowered_model.startswith("cursor-local/") or lowered_model.startswith("cursor/"):
+            normalized = "cursor-local"
+        else:
+            normalized = "openrouter"
+    if normalized not in SUPPORTED_PROVIDERS:
+        raise ValueError(f"Unsupported provider '{provider}'. Supported: {', '.join(sorted(SUPPORTED_PROVIDERS))}")
+    return normalized
 
 
-def _to_coordinator_sources(context_sources: Optional[List[ContextSource]]) -> List[CoordinatorContextSource]:
-    mapped: List[CoordinatorContextSource] = []
-    for src in context_sources or []:
-        ctype = _map_context_source_type(src.type)
-        if ctype is None:
-            continue
-        mapped.append(CoordinatorContextSource(type=ctype, path=src.path, extra=src.extra))
-    return mapped
+def _normalize_model_for_provider(model: str, provider: str) -> str:
+    normalized = (model or "").strip()
+    if provider == "lmstudio" and normalized.lower().startswith("lmstudio/"):
+        return normalized.split("/", 1)[1]
+    if provider == "cursor-local":
+        lowered = normalized.lower()
+        if lowered.startswith("cursor-local/"):
+            return normalized.split("/", 1)[1]
+        if lowered.startswith("cursor/"):
+            return normalized.split("/", 1)[1]
+    return normalized
+
+
+async def _resolve_provider_api_key(
+    *,
+    provider: str,
+    user_id: str,
+    db: Optional[AsyncSession],
+) -> Optional[str]:
+    settings = get_settings()
+    if db is not None:
+        credential = await get_provider_credential(db, owner_id=user_id, provider=provider)
+        if credential is not None:
+            return decrypt_secret(credential.encrypted_value)
+    if provider == "lmstudio":
+        return settings.lmstudio_api_key
+    if provider == "cursor-local":
+        return settings.cursor_agent_api_key
+    return settings.openrouter_api_key
+
+
+def _pack_obsidian_context_sources(
+    context_sources: List[ContextSource],
+    max_events: int = 12,
+    max_selection_chars: int = 1200,
+) -> List[ContextSource]:
+    obsidian_sources = [src for src in context_sources if (src.type or "").upper() == "OBSIDIAN"]
+    if not obsidian_sources:
+        return context_sources
+
+    non_obsidian = [src for src in context_sources if (src.type or "").upper() != "OBSIDIAN"]
+
+    def event_ts(source: ContextSource) -> int:
+        extra = source.extra or {}
+        raw = extra.get("event_ts_ms")
+        try:
+            return int(raw)
+        except Exception:
+            return 0
+
+    packed: List[ContextSource] = []
+    for src in sorted(obsidian_sources, key=event_ts, reverse=True)[:max_events]:
+        extra = dict(src.extra or {})
+        selection = extra.get("selection")
+        if isinstance(selection, str) and len(selection) > max_selection_chars:
+            extra["selection"] = selection[:max_selection_chars] + "..."
+        packed.append(ContextSource(type="OBSIDIAN", path=src.path, extra=extra))
+    return non_obsidian + packed
 
 
 def _extract_frontmatter_value(content: str, key: str) -> str:
@@ -116,14 +169,22 @@ def _extract_frontmatter_value(content: str, key: str) -> str:
 class OpenRouterLLMWrapper(BaseChatModel):
     """LangChain-compatible wrapper for OpenRouter LLM adapter."""
     
-    def __init__(self, model: str = "openai/gpt-4o-mini", **kwargs):
+    def __init__(
+        self,
+        model: str = "openai/gpt-4o-mini",
+        provider: str = "openrouter",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.model = model
-        self.adapter = OpenRouterLLMAdapter()
+        self.provider = provider
+        self.adapter = OpenRouterLLMAdapter(provider=provider, api_key=api_key, base_url=base_url)
     
     @property
     def _llm_type(self) -> str:
-        return "openrouter"
+        return self.provider
     
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         return run_coroutine_sync(self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
@@ -244,6 +305,45 @@ class CrewAIOrchestrator:
         )
         return {"research": research_path, "plan": plan_path, "answer": answer_path}
 
+    @staticmethod
+    def _build_conversation_messages(
+        *,
+        message_group_id: str,
+        user_id: str,
+        thread_id: str,
+        query: str,
+        research: str,
+        plan: str,
+        answer: str,
+        model_used: str,
+        provider: str,
+        context_payload: List[Dict[str, Any]],
+    ) -> List[ConversationMessage]:
+        base_metadata = {
+            "model": model_used,
+            "provider": provider,
+            "context_sources": context_payload,
+        }
+        phases = [
+            ("user", query, "input"),
+            ("research", research or "", "research"),
+            ("plan", plan or "", "plan"),
+            ("assistant", answer, "answer"),
+        ]
+        messages: List[ConversationMessage] = []
+        for index, (role, content, phase) in enumerate(phases):
+            messages.append(
+                ConversationMessage(
+                    id=f"{message_group_id}-{index}",
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    role=role,
+                    content=content,
+                    message_metadata={**base_metadata, "phase": phase},
+                )
+            )
+        return messages
+
     async def lint_space_wiki(
         self,
         *,
@@ -337,14 +437,18 @@ class CrewAIOrchestrator:
         user_id: UserID,
         query: Query,
         model: Optional[str] = None,
+        provider: Optional[str] = None,
         context_sources: Optional[List[ContextSource]] = None,
         db: Optional[AsyncSession] = None,
         space_manager: Optional[SpaceManager] = None,
+        thread_id: Optional[str] = None,
         **kwargs,
     ) -> WorkflowResult:
         """Process a user query through Research → Plan → Implement workflow."""
         settings = get_settings()
         model = model or settings.default_model
+        provider = _normalize_provider(provider, model)
+        model = _normalize_model_for_provider(model, provider)
         timer = TimingCollector()
 
         space_memory = self.memory
@@ -375,17 +479,21 @@ class CrewAIOrchestrator:
                     space_memory_boundary = ChromaMemoryBoundary(space_memory)
                     space_context_boundary = CoordinatorContextBoundary(space_coordinator)
                     if space_config.preferred_model:
-                        model = space_config.preferred_model
+                        model = _normalize_model_for_provider(space_config.preferred_model, provider)
             except RuntimeError:
                 pass
 
         try:
-            context_sources = context_sources or []
+            context_sources = _pack_obsidian_context_sources(context_sources or [])
 
             async def _search_memories() -> str:
-                with timer.measure("memory_search"):
-                    memories = await space_memory_boundary.search(user_id=user_id, query=query, limit=5)
-                return "\n".join([m.text for m in memories])
+                try:
+                    with timer.measure("memory_search"):
+                        memories = await space_memory_boundary.search(user_id=user_id, query=query, limit=5)
+                    return "\n".join([m.text for m in memories])
+                except Exception as e:
+                    logger.warning(f"Memory retrieval failed (continuing without memory context): {e}")
+                    return ""
 
             async def _search_obsidian() -> str:
                 try:
@@ -412,7 +520,7 @@ class CrewAIOrchestrator:
                 _research_sources(),
             )
 
-            models_to_try = _parse_fallback_models(settings, model)
+            models_to_try = _parse_fallback_models(settings, model) if provider == "openrouter" else [model]
             research = ""
             plan = ""
             answer = ""
@@ -423,7 +531,8 @@ class CrewAIOrchestrator:
             for candidate_model in models_to_try:
                 try:
                     candidate_started = time.perf_counter()
-                    llm = OpenRouterLLMWrapper(model=candidate_model)
+                    provider_key = await _resolve_provider_api_key(provider=provider, user_id=user_id, db=db)
+                    llm = OpenRouterLLMWrapper(model=candidate_model, provider=provider, api_key=provider_key)
                     researcher, planner, implementer = create_agents_for_space(
                         memory=space_memory,
                         obsidian=space_obsidian,
@@ -499,20 +608,34 @@ class CrewAIOrchestrator:
                 with timer.measure("persist_messages"):
                     if space_schema:
                         await db.execute(text(f'SET search_path TO "{space_schema}", public'))
-                    messages = [
-                        ConversationMessage(id=f"{user_id}-{hash(query)}-0", user_id=user_id, role="user", content=query, message_metadata={}),
-                        ConversationMessage(id=f"{user_id}-{hash(query)}-1", user_id=user_id, role="assistant", content=answer, message_metadata={}),
-                    ]
+                    message_group_id = str(uuid5(NAMESPACE_URL, f"{user_id}:{thread_id or 'legacy'}:{query}:{time.time_ns()}"))
+                    context_payload = [src.model_dump() for src in context_sources]
+                    messages = self._build_conversation_messages(
+                        message_group_id=message_group_id,
+                        user_id=user_id,
+                        thread_id=thread_id or f"legacy-{user_id}",
+                        query=query,
+                        research=research,
+                        plan=plan,
+                        answer=answer,
+                        model_used=model_used,
+                        provider=provider,
+                        context_payload=context_payload,
+                    )
                     db.add_all(messages)
                     await db.commit()
 
-            asyncio.create_task(
-                space_memory_boundary.store(
-                    user_id=user_id,
-                    text=f"Q: {query}\nA: {answer}",
-                    metadata={"source": "crewai-assistant"},
-                )
-            )
+            async def _safe_store_memory() -> None:
+                try:
+                    await space_memory_boundary.store(
+                        user_id=user_id,
+                        text=f"Q: {query}\nA: {answer}",
+                        metadata={"source": "crewai-assistant"},
+                    )
+                except Exception as e:
+                    logger.warning(f"Memory write failed (non-fatal): {e}")
+
+            asyncio.create_task(_safe_store_memory())
 
             wiki_artifacts: Dict[str, str] = {}
             lint_report: Optional[Dict[str, Any]] = None
@@ -552,6 +675,7 @@ class CrewAIOrchestrator:
                 plan=plan,
                 metadata={
                     "model": model_used,
+                    "provider": provider,
                     "tokens_used": tokens_used,
                     "context_sources_used": len(context_sources),
                     "source_research_included": bool(source_research),

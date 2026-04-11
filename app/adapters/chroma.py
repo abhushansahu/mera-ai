@@ -16,10 +16,19 @@ from aiocache.serializers import JsonSerializer
 
 from app.core import Memory, UserID
 from app.config import get_settings
+from app.adapters.openrouter import build_headers
 
 # Cache setup
 _cache: Optional[Cache] = None
 _embedding_client: Optional[httpx.AsyncClient] = None
+
+
+def _embeddings_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/embeddings"):
+        return normalized
+    return f"{normalized}/embeddings"
+
 
 async def _get_cache() -> Cache:
     global _cache
@@ -66,27 +75,34 @@ async def close_embedding_client() -> None:
 # Embeddings (inlined from infrastructure/embeddings.py)
 async def _get_embeddings(texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
     settings = get_settings()
+    model_name = model or settings.embedding_model
     cached_embeddings: List[Optional[List[float]]] = [None] * len(texts)
     uncached_indexes: List[int] = []
     for idx, text in enumerate(texts):
-        cached = await _get_cached("embedding", (model, text))
+        cached = await _get_cached("embedding", (model_name, text))
         if cached is not None:
             cached_embeddings[idx] = cached
         else:
             uncached_indexes.append(idx)
 
     if uncached_indexes:
+        base_url = (settings.embedding_base_url or settings.openrouter_base_url).rstrip("/")
+        api_key = settings.embedding_api_key if settings.embedding_api_key is not None else settings.openrouter_api_key
+        if "openrouter.ai" in base_url and not api_key:
+            raise RuntimeError(
+                "Embeddings require a key. Set OPENROUTER_API_KEY or configure EMBEDDING_BASE_URL/EMBEDDING_API_KEY."
+            )
         client = await _get_embedding_client()
-        url = settings.openrouter_base_url.rstrip("/") + "/embeddings"
-        headers = {"Authorization": f"Bearer {settings.openrouter_api_key}", "HTTP-Referer": "https://localhost", "X-Title": "Unified AI Assistant"}
+        url = _embeddings_url(base_url)
+        headers = build_headers(api_key, include_openrouter_meta="openrouter.ai" in base_url)
         uncached_texts = [texts[i] for i in uncached_indexes]
-        payload = {"model": model, "input": uncached_texts}
+        payload = {"model": model_name, "input": uncached_texts}
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         api_embeddings = [item["embedding"] for item in response.json()["data"]]
         for idx, emb in zip(uncached_indexes, api_embeddings):
             cached_embeddings[idx] = emb
-            await _set_cached("embedding", (model, texts[idx]), emb, ttl=6 * 3600)
+            await _set_cached("embedding", (model_name, texts[idx]), emb, ttl=6 * 3600)
 
     return [embedding if embedding is not None else [] for embedding in cached_embeddings]
 
@@ -110,7 +126,7 @@ class ChromaMemoryAdapter:
 
     async def store(self, user_id: UserID, text: str, metadata: Optional[dict] = None) -> None:
         started = time.perf_counter()
-        embeddings = await _get_embeddings([text])
+        embeddings = await _get_embeddings([text], model=get_settings().embedding_model)
         chroma_metadata = {"user_id": user_id, **(metadata or {})}
         memory_id = str(uuid4())
         collection = self._get_collection()
@@ -126,7 +142,7 @@ class ChromaMemoryAdapter:
                 return [Memory(**item) if isinstance(item, dict) else item for item in cached_result]
             return cached_result
         
-        query_embeddings = await _get_embeddings([query])
+        query_embeddings = await _get_embeddings([query], model=get_settings().embedding_model)
         collection = self._get_collection()
         results = await asyncio.to_thread(collection.query, query_embeddings=[query_embeddings[0]], n_results=limit, where={"user_id": user_id})
         

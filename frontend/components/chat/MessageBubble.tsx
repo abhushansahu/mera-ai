@@ -78,6 +78,25 @@ function MessageBubbleComponent({ message }: MessageBubbleProps) {
         } dark:prose-invert`}>
           <ReactMarkdown>{message.content}</ReactMarkdown>
         </div>
+        {!!message.metadata && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {message.metadata.model && (
+              <span className="text-[11px] px-2 py-1 rounded bg-black/10 dark:bg-white/10">
+                model: {String(message.metadata.model)}
+              </span>
+            )}
+            {Array.isArray(message.metadata.context_sources) && message.metadata.context_sources.length > 0 && (
+              <span className="text-[11px] px-2 py-1 rounded bg-black/10 dark:bg-white/10">
+                context: {message.metadata.context_sources.length}
+              </span>
+            )}
+            {message.metadata.thread_id && (
+              <span className="text-[11px] px-2 py-1 rounded bg-black/10 dark:bg-white/10">
+                thread: {String(message.metadata.thread_id)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

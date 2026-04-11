@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
+from threading import Thread
 from typing import Coroutine, TypeVar
 
 T = TypeVar("T")
 
-_bridge_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="async-bridge")
+_loop_ready = Future[asyncio.AbstractEventLoop]()
+
+
+def _start_bridge_loop() -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _loop_ready.set_result(loop)
+    loop.run_forever()
+
+
+_bridge_thread = Thread(target=_start_bridge_loop, name="async-bridge", daemon=True)
+_bridge_thread.start()
 
 
 def run_coroutine_sync(coro: Coroutine[object, object, T]) -> T:
@@ -17,9 +29,6 @@ def run_coroutine_sync(coro: Coroutine[object, object, T]) -> T:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-
-    def _runner() -> T:
-        return asyncio.run(coro)
-
-    future: Future[T] = _bridge_executor.submit(_runner)
+    bridge_loop = _loop_ready.result()
+    future = asyncio.run_coroutine_threadsafe(coro, bridge_loop)
     return future.result()

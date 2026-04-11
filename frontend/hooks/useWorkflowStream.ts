@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChatRequest } from '@/lib/api/client';
-import { getRuntimeApiUrl } from '@/lib/config/runtime';
+import { buildApiUrl, ChatRequest, getRuntimeRequestHeaders } from '@/lib/api/client';
 
 export interface StreamEvent {
   type: 'start' | 'research' | 'plan' | 'answer' | 'metadata' | 'done' | 'error';
@@ -10,51 +9,31 @@ export interface StreamEvent {
 }
 
 export function useWorkflowStream() {
-  const [events, setEvents] = useState<StreamEvent[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
-  const pendingEventsRef = useRef<StreamEvent[]>([]);
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const flushEvents = () => {
-    if (pendingEventsRef.current.length === 0) {
-      return;
-    }
-    const pending = pendingEventsRef.current;
-    pendingEventsRef.current = [];
-    setEvents((prev) => [...prev, ...pending]);
-  };
-
-  const scheduleFlush = () => {
-    if (flushTimerRef.current) {
-      return;
-    }
-    flushTimerRef.current = setTimeout(() => {
-      flushTimerRef.current = null;
-      flushEvents();
-    }, 50);
-  };
 
   const startStream = async (
     request: ChatRequest,
     onEvent?: (event: StreamEvent) => void
   ): Promise<StreamEvent[]> => {
     setIsStreaming(true);
-    setEvents([]);
     const newEvents: StreamEvent[] = [];
-
-    const API_URL = getRuntimeApiUrl();
-    const url = `${API_URL}/chat/stream`;
+    const url = buildApiUrl('/chat/stream');
 
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getRuntimeRequestHeaders(),
         },
         body: JSON.stringify(request),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `Request failed with status ${response.status}`);
+      }
 
       if (!response.body) {
         throw new Error('No response body');
@@ -78,8 +57,6 @@ export function useWorkflowStream() {
             try {
               const data = JSON.parse(line.slice(6));
               newEvents.push(data);
-              pendingEventsRef.current.push(data);
-              scheduleFlush();
               // Call callback immediately for real-time updates
               if (onEvent) {
                 onEvent(data);
@@ -97,17 +74,10 @@ export function useWorkflowStream() {
         message: error instanceof Error ? error.message : 'Unknown error',
       };
       newEvents.push(errorEvent);
-      pendingEventsRef.current.push(errorEvent);
-      flushEvents();
       if (onEvent) {
         onEvent(errorEvent);
       }
     } finally {
-      if (flushTimerRef.current) {
-        clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = null;
-      }
-      flushEvents();
       setIsStreaming(false);
       readerRef.current = null;
     }
@@ -116,19 +86,10 @@ export function useWorkflowStream() {
   };
 
   const stopStream = () => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
     if (readerRef.current) {
       readerRef.current.cancel();
       readerRef.current = null;
     }
-    if (flushTimerRef.current) {
-      clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = null;
-    }
-    flushEvents();
     setIsStreaming(false);
   };
 
@@ -139,7 +100,6 @@ export function useWorkflowStream() {
   }, []);
 
   return {
-    events,
     isStreaming,
     startStream,
     stopStream,

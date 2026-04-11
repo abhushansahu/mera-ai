@@ -1,45 +1,45 @@
-from typing import Any, Dict, List
+from typing import Any
 
 from fastapi.testclient import TestClient
 
 from app.api import create_app
 
 
-def test_chat_accepts_context_sources(monkeypatch: Any) -> None:
+def test_boundary_research_accepts_obsidian_context_sources(monkeypatch: Any) -> None:
     app = create_app()
+    captured: dict[str, Any] = {}
 
-    captured: Dict[str, Any] = {}
-
-    # Patch the orchestrator inside the app to capture context_sources.
-    original_orchestrator = app.dependency_overrides.get("orchestrator", None)
-
-    class DummyOrchestrator:
-        def process_query(
-            self,
-            user_id: str,
-            query: str,
-            preferred_model: str | None,
-            db: Any,
-            context_sources: List[Dict[str, str]] | None = None,
-        ) -> str:
-            captured["user_id"] = user_id
+    class DummyBoundary:
+        async def research(self, query: str, context_sources: list[Any]) -> str:
             captured["query"] = query
             captured["context_sources"] = context_sources
             return "ok"
 
-    # FastAPI doesn't expose orchestrator as a dependency, so we replace on the app object.
-    app.dependency_overrides.clear()
+    class DummyOrchestrator:
+        context_boundary = DummyBoundary()
+
     app.state.orchestrator = DummyOrchestrator()  # type: ignore[attr-defined]
 
     client = TestClient(app)
     payload = {
-        "user_id": "u1",
-        "query": "Hi",
-        "context_sources": [{"type": "DIRECTORY", "path": "./src"}],
+        "query": "summarize note",
+        "context_sources": [{"type": "OBSIDIAN", "path": "Wiki/Project.md", "extra": {"event_type": "open"}}],
     }
-    response = client.post("/chat", json=payload)
+    response = client.post("/internal/boundary/context/research", json=payload)
     assert response.status_code == 200
-    assert response.json()["answer"] == "ok"
-    assert captured["context_sources"] == [{"type": "DIRECTORY", "path": "./src"}]
+    assert response.json()["content"] == "ok"
+    assert captured["query"] == "summarize note"
+    assert len(captured["context_sources"]) == 1
+    assert captured["context_sources"][0].type == "OBSIDIAN"
 
 
+def test_boundary_research_rejects_unknown_context_type(monkeypatch: Any) -> None:
+    app = create_app()
+    client = TestClient(app)
+    payload = {
+        "query": "summarize",
+        "context_sources": [{"type": "UNKNOWN_KIND", "path": "abc"}],
+    }
+    response = client.post("/internal/boundary/context/research", json=payload)
+    assert response.status_code == 500
+    assert "Unsupported context source type" in response.json()["detail"]

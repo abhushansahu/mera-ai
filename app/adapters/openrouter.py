@@ -1,4 +1,4 @@
-"""OpenRouter LLM adapter."""
+"""Provider-aware LLM adapter (OpenRouter + local OpenAI-compatible backends)."""
 
 import asyncio
 import time
@@ -10,8 +10,39 @@ from app.core import LLMMessage, LLMResponse
 from app.config import get_settings
 
 
-def _build_headers(api_key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://localhost", "X-Title": "Unified AI Assistant"}
+def build_headers(api_key: Optional[str], include_openrouter_meta: bool = False) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if include_openrouter_meta:
+        headers["HTTP-Referer"] = "https://localhost"
+        headers["X-Title"] = "Unified AI Assistant"
+    return headers
+
+
+def _chat_completion_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return f"{normalized}/chat/completions"
+
+
+def _provider_default_base_url(provider: str) -> str:
+    settings = get_settings()
+    if provider == "lmstudio":
+        return settings.lmstudio_base_url
+    if provider == "cursor-local":
+        return settings.cursor_agent_base_url
+    return settings.openrouter_base_url
+
+
+def _provider_default_api_key(provider: str) -> Optional[str]:
+    settings = get_settings()
+    if provider == "lmstudio":
+        return settings.lmstudio_api_key
+    if provider == "cursor-local":
+        return settings.cursor_agent_api_key
+    return settings.openrouter_api_key
 
 _async_client: Optional[httpx.AsyncClient] = None
 _last_request_time: dict[str, float] = {}
@@ -31,11 +62,20 @@ async def _close_async_client() -> None:
 
 
 class OpenRouterLLMAdapter:
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None) -> None:
-        settings = get_settings()
-        self.api_key = api_key or settings.openrouter_api_key
-        self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
-        self.url = f"{self.base_url}/chat/completions"
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        provider: str = "openrouter",
+    ) -> None:
+        self.provider = (provider or "openrouter").strip().lower()
+        if self.provider not in {"openrouter", "lmstudio", "cursor-local"}:
+            raise ValueError(f"Unsupported provider: {provider}")
+        self.api_key = api_key if api_key is not None else _provider_default_api_key(self.provider)
+        self.base_url = (base_url or _provider_default_base_url(self.provider)).rstrip("/")
+        self.url = _chat_completion_url(self.base_url)
+        if self.provider == "openrouter" and not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY is required when provider is openrouter.")
 
     async def chat(self, messages: List[LLMMessage], model: str, max_retries: int = 3, retry_delay: float = 1.0, **kwargs) -> LLMResponse:
         client = await _get_async_client()
@@ -51,7 +91,11 @@ class OpenRouterLLMAdapter:
         for attempt in range(max_retries):
             started = time.perf_counter()
             try:
-                response = await client.post(self.url, headers=_build_headers(self.api_key), json=payload)
+                response = await client.post(
+                    self.url,
+                    headers=build_headers(self.api_key, include_openrouter_meta=self.provider == "openrouter"),
+                    json=payload,
+                )
                 response.raise_for_status()
                 data = response.json()
                 latency_ms = (time.perf_counter() - started) * 1000
@@ -59,6 +103,8 @@ class OpenRouterLLMAdapter:
                     content=data["choices"][0]["message"]["content"],
                     model=model,
                     metadata={
+                        "provider": self.provider,
+                        "base_url": self.base_url,
                         "attempt": attempt + 1,
                         "usage": data.get("usage", {}),
                         "latency_ms": round(latency_ms, 2),
@@ -82,4 +128,4 @@ class OpenRouterLLMAdapter:
         raise RuntimeError("Failed to get response after retries")
 
 
-__all__ = ["OpenRouterLLMAdapter", "_close_async_client", "_get_async_client"]
+__all__ = ["OpenRouterLLMAdapter", "_close_async_client", "_get_async_client", "build_headers"]

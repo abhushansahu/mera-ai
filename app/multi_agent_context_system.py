@@ -95,6 +95,7 @@ class ContextSourceType(str, Enum):
     API = "API"
     DATABASE = "DATABASE"
     MEMORY = "MEMORY"
+    OBSIDIAN = "OBSIDIAN"
 
 
 @dataclass
@@ -121,7 +122,11 @@ class FileExplorerAgent:
 
     @observe_langsmith(name="file_explorer_agent")
     async def run(self, sources: List[ContextSource], query: str) -> str:
-        paths = [s.path for s in sources if s.type in {ContextSourceType.FILE, ContextSourceType.DIRECTORY}]
+        paths = [
+            s.path
+            for s in sources
+            if s.type in {ContextSourceType.FILE, ContextSourceType.DIRECTORY, ContextSourceType.OBSIDIAN}
+        ]
         if not paths:
             return ""
         content = await self.read_paths(paths)
