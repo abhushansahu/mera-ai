@@ -79,6 +79,8 @@ func isAllowedPath(path string) bool {
 	switch {
 	case path == "/status", path == "/chat", path == "/contracts/version":
 		return true
+	case path == "/docs", path == "/redoc", path == "/openapi.json", path == "/docs/oauth2-redirect":
+		return true
 	case len(path) >= len("/spaces/") && path[:len("/spaces/")] == "/spaces/":
 		return true
 	case len(path) >= len("/mem0/") && path[:len("/mem0/")] == "/mem0/":
