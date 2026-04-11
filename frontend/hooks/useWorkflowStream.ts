@@ -13,6 +13,27 @@ export function useWorkflowStream() {
   const [isStreaming, setIsStreaming] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const pendingEventsRef = useRef<StreamEvent[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushEvents = () => {
+    if (pendingEventsRef.current.length === 0) {
+      return;
+    }
+    const pending = pendingEventsRef.current;
+    pendingEventsRef.current = [];
+    setEvents((prev) => [...prev, ...pending]);
+  };
+
+  const scheduleFlush = () => {
+    if (flushTimerRef.current) {
+      return;
+    }
+    flushTimerRef.current = setTimeout(() => {
+      flushTimerRef.current = null;
+      flushEvents();
+    }, 50);
+  };
 
   const startStream = async (
     request: ChatRequest,
@@ -56,7 +77,8 @@ export function useWorkflowStream() {
             try {
               const data = JSON.parse(line.slice(6));
               newEvents.push(data);
-              setEvents((prev) => [...prev, data]);
+              pendingEventsRef.current.push(data);
+              scheduleFlush();
               // Call callback immediately for real-time updates
               if (onEvent) {
                 onEvent(data);
@@ -74,11 +96,17 @@ export function useWorkflowStream() {
         message: error instanceof Error ? error.message : 'Unknown error',
       };
       newEvents.push(errorEvent);
-      setEvents((prev) => [...prev, errorEvent]);
+      pendingEventsRef.current.push(errorEvent);
+      flushEvents();
       if (onEvent) {
         onEvent(errorEvent);
       }
     } finally {
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      flushEvents();
       setIsStreaming(false);
       readerRef.current = null;
     }
@@ -95,6 +123,11 @@ export function useWorkflowStream() {
       readerRef.current.cancel();
       readerRef.current = null;
     }
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    flushEvents();
     setIsStreaming(false);
   };
 

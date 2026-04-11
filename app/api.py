@@ -1,5 +1,7 @@
 import json
 import logging
+import time
+from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -15,8 +17,11 @@ from app.core import ContextSource
 from app.db import Base, engine, get_db
 from app.config import get_settings
 from app.observability import is_langsmith_enabled
+from app.performance import TimingCollector, log_timing_summary, set_request_id
 from app.orchestrator import CrewAIOrchestrator
 from app.adapters.openrouter import _close_async_client
+from app.adapters.chroma import close_embedding_client
+from app.multi_agent_context_system import close_production_resources
 from app.spaces import SpaceConfig, SpaceManager, SpaceStatus, SpaceUsage
 # Import models to ensure they're registered with SQLAlchemy Base
 from app.models import SpaceRecord, SpaceUsageRecord  # noqa: F401
@@ -139,6 +144,7 @@ def create_app() -> FastAPI:
     
     logger.info("Using CrewAI unified orchestrator")
     orchestrator = CrewAIOrchestrator()
+    app.state.orchestrator = orchestrator
     
     database_connected = False
     database_error = None
@@ -162,9 +168,22 @@ def create_app() -> FastAPI:
             database_error = str(e)
             logger.error(f"Database initialization failed: {database_error}")
 
+    @app.middleware("http")
+    async def add_request_context(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or str(uuid4())
+        set_request_id(request_id)
+        request.state.request_id = request_id
+        started = time.perf_counter()
+        response = await call_next(request)
+        response.headers["x-request-id"] = request_id
+        response.headers["x-response-time-ms"] = f"{(time.perf_counter() - started) * 1000:.2f}"
+        return response
+
     @app.on_event("shutdown")
     async def shutdown_event() -> None:
         await _close_async_client()
+        await close_embedding_client()
+        await close_production_resources()
 
     @app.get("/status", response_model=StatusResponse)
     async def status() -> StatusResponse:
@@ -192,6 +211,7 @@ def create_app() -> FastAPI:
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
+        timer = TimingCollector()
         if not database_connected:
             raise HTTPException(
                 status_code=503,
@@ -200,31 +220,36 @@ def create_app() -> FastAPI:
         
         context_sources = None
         if request.context_sources:
-            context_sources = [ContextSource(**cs) for cs in request.context_sources]
+            with timer.measure("parse_context_sources"):
+                context_sources = [ContextSource(**cs) for cs in request.context_sources]
         
         # Initialize space manager if space_id provided
         space_manager = None
         if request.space_id:
-            space_manager = SpaceManager(db)
-            try:
-                await space_manager.switch_space(request.space_id)
-            except ValueError as e:
-                raise HTTPException(status_code=404, detail=str(e))
+            with timer.measure("switch_space"):
+                space_manager = SpaceManager(db)
+                try:
+                    await space_manager.switch_space(request.space_id)
+                except ValueError as e:
+                    raise HTTPException(status_code=404, detail=str(e))
         
-        result = await orchestrator.process_query(
-            user_id=request.user_id,
-            query=request.query,
-            model=request.model,
-            context_sources=context_sources,
-            db=db,
-            space_manager=space_manager,
-        )
+        with timer.measure("process_query"):
+            result = await app.state.orchestrator.process_query(
+                user_id=request.user_id,
+                query=request.query,
+                model=request.model,
+                context_sources=context_sources,
+                db=db,
+                space_manager=space_manager,
+            )
+        log_timing_summary(logger, "chat_completed", timer.timings_ms)
+        metadata = {**result.metadata, "api_timings_ms": timer.timings_ms}
         return ChatResponse(
             user_id=request.user_id,
             answer=result.answer,
             research=result.research,
             plan=result.plan,
-            metadata=result.metadata,
+            metadata=metadata,
         )
 
     async def _memory_adapter_for_optional_space(
@@ -514,39 +539,49 @@ def create_app() -> FastAPI:
     @app.post("/chat/stream")
     async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         """Stream chat responses with real-time RPI workflow updates."""
+        timer = TimingCollector()
         if not database_connected:
             raise HTTPException(status_code=503, detail="Database is not connected.")
         
         context_sources = None
         if request.context_sources:
-            context_sources = [ContextSource(**cs) for cs in request.context_sources]
+            with timer.measure("parse_context_sources"):
+                context_sources = [ContextSource(**cs) for cs in request.context_sources]
         
         space_manager = None
         if request.space_id:
-            space_manager = SpaceManager(db)
-            try:
-                await space_manager.switch_space(request.space_id)
-            except ValueError as e:
-                raise HTTPException(status_code=404, detail=str(e))
+            with timer.measure("switch_space"):
+                space_manager = SpaceManager(db)
+                try:
+                    await space_manager.switch_space(request.space_id)
+                except ValueError as e:
+                    raise HTTPException(status_code=404, detail=str(e))
         
         async def generate_stream():
             try:
                 yield f"data: {json.dumps({'type': 'start', 'message': 'Starting workflow...'})}\n\n"
-                result = await orchestrator.process_query(
-                    user_id=request.user_id,
-                    query=request.query,
-                    model=request.model,
-                    context_sources=context_sources,
-                    db=db,
-                    space_manager=space_manager,
-                )
+                with timer.measure("process_query"):
+                    result = await app.state.orchestrator.process_query(
+                        user_id=request.user_id,
+                        query=request.query,
+                        model=request.model,
+                        context_sources=context_sources,
+                        db=db,
+                        space_manager=space_manager,
+                    )
                 if result.research:
                     yield f"data: {json.dumps({'type': 'research', 'content': result.research})}\n\n"
                 if result.plan:
                     yield f"data: {json.dumps({'type': 'plan', 'content': result.plan})}\n\n"
+                if result.research:
+                    timer.add("emit_research", 0.1)
+                if result.plan:
+                    timer.add("emit_plan", 0.1)
                 yield f"data: {json.dumps({'type': 'answer', 'content': result.answer})}\n\n"
-                yield f"data: {json.dumps({'type': 'metadata', 'data': result.metadata})}\n\n"
+                stream_metadata = {**result.metadata, "api_timings_ms": timer.timings_ms}
+                yield f"data: {json.dumps({'type': 'metadata', 'data': stream_metadata})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                log_timing_summary(logger, "chat_stream_completed", timer.timings_ms)
             except Exception as e:
                 logger.error(f"Error in stream: {e}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

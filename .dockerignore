@@ -58,6 +58,11 @@ Thumbs.db
 # Obsidian plugin
 obsidian-plugin/
 
+# Frontend artifacts (backend image does not need these)
+frontend/
+**/node_modules/
+**/.next/
+
 # Scripts (not needed in container)
 scripts/
 

@@ -1,13 +1,14 @@
 "use client";
 
 import { useAppStore } from '@/store/useAppStore';
+import { useMemo } from 'react';
 import ReactFlow, { Node, Edge, Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 export function RPIWorkflow() {
   const { workflowState } = useAppStore();
 
-  const nodes: Node[] = [
+  const nodes: Node[] = useMemo(() => [
     {
       id: 'research',
       type: 'default',
@@ -93,9 +94,9 @@ export function RPIWorkflow() {
         transition: 'all 0.3s ease',
       },
     },
-  ];
+  ], [workflowState]);
 
-  const edges: Edge[] = [
+  const edges: Edge[] = useMemo(() => [
     {
       id: 'research-plan',
       source: 'research',
@@ -110,7 +111,7 @@ export function RPIWorkflow() {
       animated: workflowState.stage === 'implement' || workflowState.stage === 'complete',
       style: { stroke: workflowState.stage === 'implement' || workflowState.stage === 'complete' ? '#10b981' : '#9ca3af', strokeWidth: 2 },
     },
-  ];
+  ], [workflowState.stage]);
 
   return (
     <div className="w-full h-full border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden bg-white dark:bg-gray-800 shadow-sm">

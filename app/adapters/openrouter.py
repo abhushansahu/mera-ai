@@ -49,14 +49,20 @@ class OpenRouterLLMAdapter:
         payload = {"model": model, "messages": [{"role": msg.role, "content": msg.content} for msg in messages], **kwargs}
         last_exception = None
         for attempt in range(max_retries):
+            started = time.perf_counter()
             try:
                 response = await client.post(self.url, headers=_build_headers(self.api_key), json=payload)
                 response.raise_for_status()
                 data = response.json()
+                latency_ms = (time.perf_counter() - started) * 1000
                 return LLMResponse(
                     content=data["choices"][0]["message"]["content"],
                     model=model,
-                    metadata={"attempt": attempt + 1, "usage": data.get("usage", {})},
+                    metadata={
+                        "attempt": attempt + 1,
+                        "usage": data.get("usage", {}),
+                        "latency_ms": round(latency_ms, 2),
+                    },
                 )
             except httpx.HTTPStatusError as e:
                 if e.response.status_code < 500:

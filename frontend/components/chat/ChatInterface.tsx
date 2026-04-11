@@ -11,7 +11,7 @@ export function ChatInterface() {
   const { messages, addMessage, currentSpace, workflowState, setWorkflowState } = useAppStore();
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { startStream, isStreaming, events } = useWorkflowStream();
+  const { startStream, isStreaming } = useWorkflowStream();
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;

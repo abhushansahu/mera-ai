@@ -429,11 +429,17 @@ mera-ai/
 # Run all tests
 pytest
 
+# Fast local suite (skip integration + performance)
+pytest -m "not integration and not performance" tests
+
 # Run specific test file
 pytest tests/unit/test_spaces.py
 
 # Run with coverage
 pytest --cov=app tests/
+
+# Run performance smoke checks
+pytest -m performance tests/performance
 ```
 
 ### Code Structure

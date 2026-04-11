@@ -1,6 +1,5 @@
 """CrewAI tools, agents, and tasks for Research → Plan → Implement workflow."""
 
-import asyncio
 from pathlib import Path
 from typing import List, Optional
 
@@ -9,6 +8,7 @@ from crewai.tools import tool
 
 from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.obsidian import ObsidianClient
+from app.async_utils import run_coroutine_sync
 from app.multi_agent_context_system import (
     ContextSource,
     ContextSourceType,
@@ -84,7 +84,7 @@ class ChromaMemoryTool:
         self.user_id = user_id
 
     def search_memory(self, query: str, limit: int = 5) -> str:
-        results = asyncio.run(self.memory.search(user_id=self.user_id, query=query, limit=limit))
+        results = run_coroutine_sync(self.memory.search(user_id=self.user_id, query=query, limit=limit))
         if not results:
             return f"No relevant memories found for query: {query}"
         return "\n\n".join([
@@ -107,7 +107,7 @@ class ObsidianTool:
         self.obsidian = obsidian
 
     def search_obsidian(self, query: str, limit: int = 5) -> str:
-        results = asyncio.run(self.obsidian.search(query=query, limit=limit))
+        results = run_coroutine_sync(self.obsidian.search(query=query, limit=limit))
         if not results:
             return f"No relevant notes found in Obsidian vault for query: {query}"
         return "\n\n".join([
@@ -140,7 +140,7 @@ class FileExplorerCrewAITool:
             )
             for p in path_list
         ]
-        return asyncio.run(self.file_agent.run(sources, query=""))
+        return run_coroutine_sync(self.file_agent.run(sources, query=""))
 
     def to_crewai_tool(self):
         @tool("file_explorer")
@@ -165,7 +165,7 @@ class LinkCrawlerCrewAITool:
             )
             for u in url_list
         ]
-        return asyncio.run(self.link_agent.run(sources, query=""))
+        return run_coroutine_sync(self.link_agent.run(sources, query=""))
 
     def to_crewai_tool(self):
         @tool("link_crawler")
@@ -184,7 +184,7 @@ class DataAnalyzerCrewAITool:
 
     def analyze_database(self, dsn: str) -> str:
         sources = [ContextSource(type=ContextSourceType.DATABASE, path=dsn)]
-        return asyncio.run(self.data_agent.run(sources, query=self.query_context or ""))
+        return run_coroutine_sync(self.data_agent.run(sources, query=self.query_context or ""))
 
     def to_crewai_tool(self):
         @tool("data_analyzer")
@@ -208,7 +208,7 @@ class MemoryRetrieverCrewAITool:
             identifier = "default"
             query = parts[0]
         sources = [ContextSource(type=ContextSourceType.MEMORY, path=identifier)]
-        return asyncio.run(self.memory_agent.run(sources, query=query))
+        return run_coroutine_sync(self.memory_agent.run(sources, query=query))
 
     def to_crewai_tool(self):
         @tool("memory_retriever")

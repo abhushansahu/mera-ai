@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import { useAppStore } from '@/store/useAppStore';
 import { chatApi } from '@/lib/api/client';
@@ -15,6 +15,8 @@ export function MemoryGraph({ spaceId }: MemoryGraphProps) {
   const { currentSpace } = useAppStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [graphData, setGraphData] = useState<any | null>(null);
+  const [selectedText, setSelectedText] = useState<string | null>(null);
   const activeSpaceId = spaceId || currentSpace?.space_id;
 
   useEffect(() => {
@@ -28,116 +30,7 @@ export function MemoryGraph({ spaceId }: MemoryGraphProps) {
         setLoading(true);
         setError(null);
         const data = await chatApi.getSpaceVisualization(activeSpaceId);
-        
-        if (!containerRef.current) return;
-
-        // Destroy existing instance
-        if (cyRef.current) {
-          cyRef.current.destroy();
-        }
-
-        // Build graph from memory data
-        const nodes: any[] = [];
-        const edges: any[] = [];
-        
-        if (data.memories && Array.isArray(data.memories)) {
-          data.memories.forEach((memory: any, index: number) => {
-            nodes.push({
-              data: {
-                id: `memory-${index}`,
-                label: memory.text?.substring(0, 30) || `Memory ${index + 1}`,
-                fullText: memory.text,
-                score: memory.score,
-              },
-            });
-            
-            // Create connections between related memories (simplified - based on score similarity)
-            if (index > 0 && memory.score > 0.5) {
-              edges.push({
-                data: {
-                  id: `edge-${index}`,
-                  source: `memory-${index - 1}`,
-                  target: `memory-${index}`,
-                },
-              });
-            }
-          });
-        }
-
-        // If no memories, show placeholder
-        if (nodes.length === 0) {
-          nodes.push({
-            data: { id: 'placeholder', label: 'No memories yet' },
-          });
-        }
-
-        cyRef.current = cytoscape({
-          container: containerRef.current,
-          elements: [...nodes, ...edges],
-          style: [
-            {
-              selector: 'node',
-              style: {
-                'background-color': '#3b82f6',
-                label: 'data(label)',
-                'text-valign': 'center',
-                'text-halign': 'center',
-                color: 'white',
-                width: 100,
-                height: 100,
-                'font-size': '12px',
-                'text-wrap': 'wrap',
-                'text-max-width': '80px',
-                shape: 'ellipse',
-              },
-            },
-            {
-              selector: 'edge',
-              style: {
-                'line-color': '#9ca3af',
-                'target-arrow-color': '#9ca3af',
-                'target-arrow-shape': 'triangle',
-                'curve-style': 'bezier',
-                width: 2,
-              },
-            },
-            {
-              selector: 'node[label = "No memories yet"]',
-              style: {
-                'background-color': '#9ca3af',
-                width: 150,
-                height: 50,
-              },
-            },
-          ],
-          layout: {
-            name: 'cose',
-            idealEdgeLength: 100,
-            nodeOverlap: 20,
-            refresh: 20,
-            fit: true,
-            padding: 30,
-            randomize: false,
-            componentSpacing: 100,
-            nodeRepulsion: 4000000,
-            edgeElasticity: 100,
-            nestingFactor: 5,
-            gravity: 80,
-            numIter: 1000,
-            initialTemp: 200,
-            coolingFactor: 0.95,
-            minTemp: 1.0,
-          },
-        });
-
-        // Add click handler
-        cyRef.current.on('tap', 'node', (evt) => {
-          const node = evt.target;
-          const fullText = node.data('fullText');
-          if (fullText) {
-            alert(fullText);
-          }
-        });
+        setGraphData(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load memory graph');
         console.error('Error loading memory graph:', err);
@@ -154,6 +47,115 @@ export function MemoryGraph({ spaceId }: MemoryGraphProps) {
       }
     };
   }, [activeSpaceId]);
+
+  const graphElements = useMemo(() => {
+    const nodes: any[] = [];
+    const edges: any[] = [];
+    const memories = graphData?.memories;
+    if (memories && Array.isArray(memories)) {
+      memories.forEach((memory: any, index: number) => {
+        nodes.push({
+          data: {
+            id: `memory-${index}`,
+            label: memory.text?.substring(0, 30) || `Memory ${index + 1}`,
+            fullText: memory.text,
+            score: memory.score,
+          },
+        });
+        if (index > 0 && memory.score > 0.5) {
+          edges.push({
+            data: {
+              id: `edge-${index}`,
+              source: `memory-${index - 1}`,
+              target: `memory-${index}`,
+            },
+          });
+        }
+      });
+    }
+
+    if (nodes.length === 0) {
+      nodes.push({
+        data: { id: 'placeholder', label: 'No memories yet' },
+      });
+    }
+    return [...nodes, ...edges];
+  }, [graphData]);
+
+  useEffect(() => {
+    if (!containerRef.current || graphElements.length === 0) {
+      return;
+    }
+    if (cyRef.current) {
+      cyRef.current.destroy();
+    }
+    const heavyGraph = graphElements.length > 120;
+    cyRef.current = cytoscape({
+      container: containerRef.current,
+      elements: graphElements,
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': '#3b82f6',
+            label: 'data(label)',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            color: 'white',
+            width: 100,
+            height: 100,
+            'font-size': '12px',
+            'text-wrap': 'wrap',
+            'text-max-width': '80px',
+            shape: 'ellipse',
+          },
+        },
+        {
+          selector: 'edge',
+          style: {
+            'line-color': '#9ca3af',
+            'target-arrow-color': '#9ca3af',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier',
+            width: 2,
+          },
+        },
+        {
+          selector: 'node[label = "No memories yet"]',
+          style: {
+            'background-color': '#9ca3af',
+            width: 150,
+            height: 50,
+          },
+        },
+      ],
+      layout: heavyGraph
+        ? { name: 'grid', fit: true, padding: 24 }
+        : {
+            name: 'cose',
+            idealEdgeLength: 100,
+            nodeOverlap: 20,
+            refresh: 20,
+            fit: true,
+            padding: 30,
+            randomize: false,
+            componentSpacing: 100,
+            nodeRepulsion: 4000000,
+            edgeElasticity: 100,
+            nestingFactor: 5,
+            gravity: 80,
+            numIter: 400,
+            initialTemp: 120,
+            coolingFactor: 0.95,
+            minTemp: 1.0,
+          },
+    });
+
+    cyRef.current.on('tap', 'node', (evt) => {
+      const fullText = evt.target.data('fullText');
+      setSelectedText(typeof fullText === 'string' ? fullText : null);
+    });
+  }, [graphElements]);
 
   if (loading) {
     return (
@@ -183,9 +185,16 @@ export function MemoryGraph({ spaceId }: MemoryGraphProps) {
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-96 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800"
-    />
+    <div className="space-y-3">
+      <div
+        ref={containerRef}
+        className="w-full h-96 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800"
+      />
+      {selectedText && (
+        <div className="max-h-32 overflow-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-sm text-gray-700 dark:text-gray-200">
+          {selectedText}
+        </div>
+      )}
+    </div>
   );
 }

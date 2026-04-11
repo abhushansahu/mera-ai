@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ReactFlow, { Node, Edge, Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { chatApi } from '@/lib/api/client';
@@ -13,14 +13,22 @@ export function AgentFlow({ sessionId }: AgentFlowProps) {
   const [agents, setAgents] = useState<any[]>([]);
 
   useEffect(() => {
+    let mounted = true;
     if (sessionId) {
       chatApi.getAgentActivity(sessionId).then((data) => {
-        setAgents(data.agents || []);
+        if (mounted) {
+          setAgents(data.agents || []);
+        }
       });
+    } else {
+      setAgents([]);
     }
+    return () => {
+      mounted = false;
+    };
   }, [sessionId]);
 
-  const nodes: Node[] = agents.map((agent, index) => ({
+  const nodes: Node[] = useMemo(() => agents.map((agent, index) => ({
     id: agent.name || `agent-${index}`,
     type: 'default',
     position: { x: index * 200, y: 100 },
@@ -40,17 +48,20 @@ export function AgentFlow({ sessionId }: AgentFlowProps) {
       border: agent.status === 'active' ? '2px solid #3b82f6' : '1px solid #e5e7eb',
       borderRadius: '8px',
     },
-  }));
+  })), [agents]);
 
-  const edges: Edge[] = [];
-  for (let i = 0; i < nodes.length - 1; i++) {
-    edges.push({
-      id: `edge-${i}`,
-      source: nodes[i].id,
-      target: nodes[i + 1].id,
-      animated: agents[i]?.status === 'active',
-    });
-  }
+  const edges: Edge[] = useMemo(() => {
+    const computed: Edge[] = [];
+    for (let i = 0; i < nodes.length - 1; i++) {
+      computed.push({
+        id: `edge-${i}`,
+        source: nodes[i].id,
+        target: nodes[i + 1].id,
+        animated: agents[i]?.status === 'active',
+      });
+    }
+    return computed;
+  }, [agents, nodes]);
 
   return (
     <div className="w-full h-64 border rounded-lg">

@@ -17,6 +17,8 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 
 _cache: Optional[Cache] = None
+_http_client: Optional[httpx.AsyncClient] = None
+_db_engines: Dict[str, AsyncEngine] = {}
 
 
 async def _get_cache() -> Cache:
@@ -45,6 +47,45 @@ async def _set_cached(prefix: str, key_args: tuple, value: Any, ttl: int = 1800)
         await cache.set(_make_key(prefix, *key_args), value, ttl=ttl)
     except Exception:
         pass
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=True,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+        )
+    return _http_client
+
+
+def _normalize_async_dsn(dsn: str) -> str:
+    async_dsn = dsn.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+    async_dsn = async_dsn.replace("postgresql://", "postgresql+asyncpg://")
+    return async_dsn
+
+
+def _get_db_engine(dsn: str) -> AsyncEngine:
+    engine = _db_engines.get(dsn)
+    if engine is None:
+        engine = create_async_engine(
+            _normalize_async_dsn(dsn),
+            connect_args={"command_timeout": 5},
+            pool_pre_ping=True,
+        )
+        _db_engines[dsn] = engine
+    return engine
+
+
+async def close_production_resources() -> None:
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+    for engine in _db_engines.values():
+        await engine.dispose()
+    _db_engines.clear()
 
 
 class ContextSourceType(str, Enum):
@@ -256,11 +297,7 @@ class MultiAgentCoordinator:
             return "\n\n".join(results)
 
         async def fetch_urls(urls: Iterable[str]) -> str:
-            client = httpx.AsyncClient(
-                timeout=10.0,
-                follow_redirects=True,
-                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
-            )
+            client = await _get_http_client()
 
             async def fetch_single_url(url: str) -> str:
                 cache_key = ("url_fetch", url)
@@ -284,45 +321,39 @@ class MultiAgentCoordinator:
                 except Exception as e:
                     return f"Error fetching {url}: {e}"
 
-            try:
-                tasks = [fetch_single_url(url) for url in urls]
-                results = await asyncio.gather(*tasks)
-                return "\n\n".join(results)
-            finally:
-                await client.aclose()
+            tasks = [fetch_single_url(url) for url in urls]
+            results = await asyncio.gather(*tasks)
+            return "\n\n".join(results)
 
         async def analyze_databases(dbs: Iterable[str], query: str) -> str:
             async def analyze_single_db(dsn: str) -> str:
+                cache_key = ("db_schema", dsn, query)
+                cached = await _get_cached("db_schema", cache_key)
+                if cached is not None:
+                    return str(cached)
                 try:
-                    async_dsn = dsn.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
-                    async_dsn = async_dsn.replace("postgresql://", "postgresql+asyncpg://")
-                    
-                    engine: AsyncEngine = create_async_engine(
-                        async_dsn,
-                        connect_args={"command_timeout": 5},
-                        pool_pre_ping=True,
+                    engine = _get_db_engine(dsn)
+                    inspector = inspect(engine.sync_engine)
+                    tables = inspector.get_table_names()
+                    table_columns: Dict[str, List[str]] = {}
+                    for table_name in tables[:20]:
+                        columns = inspector.get_columns(table_name)
+                        table_columns[table_name] = [f"{c['name']} ({c['type']})" for c in columns[:10]]
+
+                    if not tables:
+                        return f"## Database: {dsn}\n\nNo tables found."
+
+                    schema_info = []
+                    for table_name in tables[:20]:
+                        col_info = ", ".join(table_columns.get(table_name, []))
+                        schema_info.append(f"- **{table_name}**: {col_info}")
+
+                    result = (
+                        f"## Database: {dsn}\n\n"
+                        f"Query context: {query}\n\n"
+                        f"Tables ({len(tables)}):\n" + "\n".join(schema_info)
                     )
-
-                    async with engine.begin() as conn:
-                        inspector = inspect(engine.sync_engine)
-                        tables = inspector.get_table_names()
-                        
-                        if not tables:
-                            return f"## Database: {dsn}\n\nNo tables found."
-
-                        schema_info = []
-                        for table_name in tables[:20]:
-                            columns = inspector.get_columns(table_name)
-                            col_info = ", ".join([f"{c['name']} ({c['type']})" for c in columns[:10]])
-                            schema_info.append(f"- **{table_name}**: {col_info}")
-
-                        result = (
-                            f"## Database: {dsn}\n\n"
-                            f"Query context: {query}\n\n"
-                            f"Tables ({len(tables)}):\n" + "\n".join(schema_info)
-                        )
-                    
-                    await engine.dispose()
+                    await _set_cached("db_schema", cache_key, result, ttl=900)
                     return result
                 except Exception as e:
                     return f"Error analyzing database {dsn}: {e}"

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from app.config import get_settings
 
 # Cache setup
 _cache: Optional[Cache] = None
+_embedding_client: Optional[httpx.AsyncClient] = None
 
 async def _get_cache() -> Cache:
     global _cache
@@ -43,17 +45,50 @@ async def _set_cached(prefix: str, key_args: tuple, value: Any, key_kwargs: Opti
     except Exception:
         pass
 
+
+async def _get_embedding_client() -> httpx.AsyncClient:
+    global _embedding_client
+    if _embedding_client is None:
+        _embedding_client = httpx.AsyncClient(
+            timeout=60.0,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+        )
+    return _embedding_client
+
+
+async def close_embedding_client() -> None:
+    global _embedding_client
+    if _embedding_client is not None:
+        await _embedding_client.aclose()
+        _embedding_client = None
+
+
 # Embeddings (inlined from infrastructure/embeddings.py)
 async def _get_embeddings(texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
-    import httpx
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    cached_embeddings: List[Optional[List[float]]] = [None] * len(texts)
+    uncached_indexes: List[int] = []
+    for idx, text in enumerate(texts):
+        cached = await _get_cached("embedding", (model, text))
+        if cached is not None:
+            cached_embeddings[idx] = cached
+        else:
+            uncached_indexes.append(idx)
+
+    if uncached_indexes:
+        client = await _get_embedding_client()
         url = settings.openrouter_base_url.rstrip("/") + "/embeddings"
         headers = {"Authorization": f"Bearer {settings.openrouter_api_key}", "HTTP-Referer": "https://localhost", "X-Title": "Unified AI Assistant"}
-        payload = {"model": model, "input": texts}
+        uncached_texts = [texts[i] for i in uncached_indexes]
+        payload = {"model": model, "input": uncached_texts}
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        return [item["embedding"] for item in response.json()["data"]]
+        api_embeddings = [item["embedding"] for item in response.json()["data"]]
+        for idx, emb in zip(uncached_indexes, api_embeddings):
+            cached_embeddings[idx] = emb
+            await _set_cached("embedding", (model, texts[idx]), emb, ttl=6 * 3600)
+
+    return [embedding if embedding is not None else [] for embedding in cached_embeddings]
 
 
 class ChromaMemoryAdapter:
@@ -74,13 +109,16 @@ class ChromaMemoryAdapter:
         return self._collection
 
     async def store(self, user_id: UserID, text: str, metadata: Optional[dict] = None) -> None:
+        started = time.perf_counter()
         embeddings = await _get_embeddings([text])
         chroma_metadata = {"user_id": user_id, **(metadata or {})}
         memory_id = str(uuid4())
         collection = self._get_collection()
         await asyncio.to_thread(collection.add, ids=[memory_id], embeddings=[embeddings[0]], documents=[text], metadatas=[chroma_metadata])
+        await _set_cached("chroma_store_timing", (user_id, memory_id), {"duration_ms": round((time.perf_counter() - started) * 1000, 2)}, ttl=300)
 
     async def search(self, user_id: UserID, query: str, limit: int = 5) -> List[Memory]:
+        started = time.perf_counter()
         cache_key = (user_id, query, limit)
         cached_result = await _get_cached("chroma_search", cache_key)
         if cached_result is not None:
@@ -103,4 +141,5 @@ class ChromaMemoryAdapter:
         
         cache_data = [{"text": m.text, "metadata": m.metadata, "score": m.score} for m in memories]
         await _set_cached("chroma_search", cache_key, cache_data, ttl=1800)
+        await _set_cached("chroma_search_timing", cache_key, {"duration_ms": round((time.perf_counter() - started) * 1000, 2)}, ttl=300)
         return memories

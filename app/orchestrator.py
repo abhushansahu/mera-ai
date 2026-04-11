@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.openrouter import OpenRouterLLMAdapter
 from app.adapters.obsidian import ObsidianClient
+from app.async_utils import run_coroutine_sync
 from app.config import get_settings
 from app.core import ContextSource, LLMMessage, Orchestrator, Query, UserID, WorkflowResult
 from app.crewai import create_agents_for_space, create_tasks_for_workflow
@@ -29,6 +31,7 @@ from app.multi_agent_context_system import (
     MultiAgentCoordinator,
 )
 from app.observability import observe_langsmith
+from app.performance import TimingCollector, log_timing_summary
 from app.spaces import SpaceConfig, SpaceManager
 
 logger = logging.getLogger(__name__)
@@ -120,8 +123,7 @@ class OpenRouterLLMWrapper(BaseChatModel):
         return "openrouter"
     
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        import asyncio
-        return asyncio.run(self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
+        return run_coroutine_sync(self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs))
     
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         llm_messages = []
@@ -334,6 +336,7 @@ class CrewAIOrchestrator:
         """Process a user query through Research → Plan → Implement workflow."""
         settings = get_settings()
         model = model or settings.default_model
+        timer = TimingCollector()
 
         space_memory = self.memory
         space_obsidian = self.obsidian
@@ -344,46 +347,59 @@ class CrewAIOrchestrator:
 
         if space_manager:
             try:
-                space_config = space_manager.get_current_space()
-                active_space = space_config
-                space_schema = space_config.postgres_schema
-                usage = await space_manager.get_space_usage(space_config.space_id)
-                remaining = usage.get_budget_remaining(space_config)
-                if remaining < 10_000:
-                    return WorkflowResult(
-                        answer=f"Space budget exceeded. Only {remaining:,} tokens remaining.",
-                        metadata={"error": "budget_exceeded", "remaining": remaining},
-                    )
-                space_memory = _get_memory_for_space(space_config)
-                space_obsidian = ObsidianClient(vault_path=space_config.obsidian_vault_path)
-                space_coordinator = MultiAgentCoordinator.production(mem0_wrapper=space_memory)
-                if space_config.preferred_model:
-                    model = space_config.preferred_model
+                with timer.measure("space_resolution"):
+                    space_config = space_manager.get_current_space()
+                    active_space = space_config
+                    space_schema = space_config.postgres_schema
+                    usage = await space_manager.get_space_usage(space_config.space_id)
+                    remaining = usage.get_budget_remaining(space_config)
+                    if remaining < 10_000:
+                        return WorkflowResult(
+                            answer=f"Space budget exceeded. Only {remaining:,} tokens remaining.",
+                            metadata={"error": "budget_exceeded", "remaining": remaining},
+                        )
+                    space_memory = _get_memory_for_space(space_config)
+                    space_obsidian = ObsidianClient(vault_path=space_config.obsidian_vault_path)
+                    space_coordinator = MultiAgentCoordinator.production(mem0_wrapper=space_memory)
+                    if space_config.preferred_model:
+                        model = space_config.preferred_model
             except RuntimeError:
                 pass
 
         try:
-            # Retrieve context directly from adapters
-            memories = await space_memory.search(user_id=user_id, query=query, limit=5)
-            memories_text = "\n".join([m.text for m in memories])
-            
-            obsidian_text = ""
-            try:
-                obsidian_results = await space_obsidian.search(query=query, limit=5)
-                obsidian_text = "\n\n".join([r.get("content", "") for r in obsidian_results])
-            except Exception as e:
-                logger.warning(f"Obsidian retrieval failed: {e}")
-
             context_sources = context_sources or []
-            source_research = ""
             coordinator_sources = _to_coordinator_sources(context_sources)
-            if coordinator_sources:
+
+            async def _search_memories() -> str:
+                with timer.measure("memory_search"):
+                    memories = await space_memory.search(user_id=user_id, query=query, limit=5)
+                return "\n".join([m.text for m in memories])
+
+            async def _search_obsidian() -> str:
                 try:
-                    spec = ContextSpecification(query=query, sources=coordinator_sources)
-                    source_research = await space_coordinator.research_with_context(spec)
+                    with timer.measure("obsidian_search"):
+                        obsidian_results = await space_obsidian.search(query=query, limit=5)
+                    return "\n\n".join([r.get("content", "") for r in obsidian_results])
+                except Exception as e:
+                    logger.warning(f"Obsidian retrieval failed: {e}")
+                    return ""
+
+            async def _research_sources() -> str:
+                if not coordinator_sources:
+                    return ""
+                try:
+                    with timer.measure("context_source_research"):
+                        spec = ContextSpecification(query=query, sources=coordinator_sources)
+                        return await space_coordinator.research_with_context(spec)
                 except Exception as e:
                     logger.warning(f"Context source research failed: {e}")
-                    source_research = f"Context source research failed: {e}"
+                    return f"Context source research failed: {e}"
+
+            memories_text, obsidian_text, source_research = await asyncio.gather(
+                _search_memories(),
+                _search_obsidian(),
+                _research_sources(),
+            )
 
             models_to_try = _parse_fallback_models(settings, model)
             research = ""
@@ -395,6 +411,7 @@ class CrewAIOrchestrator:
 
             for candidate_model in models_to_try:
                 try:
+                    candidate_started = time.perf_counter()
                     llm = OpenRouterLLMWrapper(model=candidate_model)
                     researcher, planner, implementer = create_agents_for_space(
                         memory=space_memory,
@@ -451,6 +468,10 @@ class CrewAIOrchestrator:
 
                     if answer.strip():
                         model_used = candidate_model
+                        timer.add(
+                            f"workflow_{candidate_model.replace('/', '_')}",
+                            (time.perf_counter() - candidate_started) * 1000,
+                        )
                         break
                     raise RuntimeError("Empty answer from workflow")
                 except Exception as e:
@@ -464,45 +485,50 @@ class CrewAIOrchestrator:
                 raise RuntimeError("Workflow failed for all candidate models")
             
             if db:
-                if space_schema:
-                    await db.execute(text(f'SET search_path TO "{space_schema}", public'))
-                messages = [
-                    ConversationMessage(id=f"{user_id}-{hash(query)}-0", user_id=user_id, role="user", content=query, message_metadata={}),
-                    ConversationMessage(id=f"{user_id}-{hash(query)}-1", user_id=user_id, role="assistant", content=answer, message_metadata={}),
-                ]
-                db.add_all(messages)
-                await db.commit()
+                with timer.measure("persist_messages"):
+                    if space_schema:
+                        await db.execute(text(f'SET search_path TO "{space_schema}", public'))
+                    messages = [
+                        ConversationMessage(id=f"{user_id}-{hash(query)}-0", user_id=user_id, role="user", content=query, message_metadata={}),
+                        ConversationMessage(id=f"{user_id}-{hash(query)}-1", user_id=user_id, role="assistant", content=answer, message_metadata={}),
+                    ]
+                    db.add_all(messages)
+                    await db.commit()
 
             asyncio.create_task(space_memory.store(user_id=user_id, text=f"Q: {query}\nA: {answer}", metadata={"source": "crewai-assistant"}))
 
             wiki_artifacts: Dict[str, str] = {}
             lint_report: Optional[Dict[str, Any]] = None
             try:
-                wiki_artifacts = await self._save_wiki_artifacts(
-                    obsidian=space_obsidian,
-                    query=query,
-                    research=research,
-                    plan=plan,
-                    answer=answer,
-                    model_used=model_used,
-                    context_sources=context_sources,
-                )
+                with timer.measure("wiki_persist"):
+                    wiki_artifacts = await self._save_wiki_artifacts(
+                        obsidian=space_obsidian,
+                        query=query,
+                        research=research,
+                        plan=plan,
+                        answer=answer,
+                        model_used=model_used,
+                        context_sources=context_sources,
+                    )
                 if active_space:
-                    lint_report = await self.lint_space_wiki(obsidian=space_obsidian, save_report=True)
+                    with timer.measure("wiki_lint"):
+                        lint_report = await self.lint_space_wiki(obsidian=space_obsidian, save_report=True)
             except Exception as e:
                 logger.warning(f"Wiki persistence/lint failed: {e}")
 
             if space_manager:
                 try:
-                    space_config = space_manager.get_current_space()
-                    total_tokens = _estimate_tokens(query) + _estimate_tokens(research) + _estimate_tokens(plan) + _estimate_tokens(answer)
-                    await space_manager.update_space_usage(
-                        space_id=space_config.space_id, tokens_used=total_tokens, api_calls_used=3, cost_usd=(total_tokens / 1000) * 0.015
-                    )
-                    tokens_used = total_tokens
+                    with timer.measure("space_usage_update"):
+                        space_config = space_manager.get_current_space()
+                        total_tokens = _estimate_tokens(query) + _estimate_tokens(research) + _estimate_tokens(plan) + _estimate_tokens(answer)
+                        await space_manager.update_space_usage(
+                            space_id=space_config.space_id, tokens_used=total_tokens, api_calls_used=3, cost_usd=(total_tokens / 1000) * 0.015
+                        )
+                        tokens_used = total_tokens
                 except Exception as e:
                     logger.warning(f"Failed to track token usage: {e}")
 
+            log_timing_summary(logger, "orchestrator_process_query", timer.timings_ms)
             return WorkflowResult(
                 answer=answer,
                 research=research,
@@ -514,6 +540,7 @@ class CrewAIOrchestrator:
                     "source_research_included": bool(source_research),
                     "wiki_artifacts": wiki_artifacts,
                     "wiki_lint_summary": lint_report["summary"] if lint_report else None,
+                    "orchestrator_timings_ms": timer.timings_ms,
                 },
             )
         except Exception as e:
