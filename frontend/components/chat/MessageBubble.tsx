@@ -2,13 +2,13 @@
 
 import { Message } from '@/store/useAppStore';
 import ReactMarkdown from 'react-markdown';
-import { useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 
 interface MessageBubbleProps {
   message: Message;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubbleComponent({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isResearch = message.role === 'research';
   const isPlan = message.role === 'plan';
@@ -20,12 +20,14 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const formatTime = (date: Date) => {
-    return new Intl.DateTimeFormat('en-US', {
+  const formattedTime = useMemo(
+    () =>
+      new Intl.DateTimeFormat('en-US', {
       hour: 'numeric',
       minute: '2-digit',
-    }).format(date);
-  };
+      }).format(message.timestamp),
+    [message.timestamp]
+  );
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4 animate-fade-in`}>
@@ -58,7 +60,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs opacity-70">
-              {formatTime(message.timestamp)}
+              {formattedTime}
             </span>
             {!isUser && (
               <button
@@ -80,3 +82,5 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     </div>
   );
 }
+
+export const MessageBubble = memo(MessageBubbleComponent);

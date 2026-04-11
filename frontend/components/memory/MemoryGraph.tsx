@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import { useAppStore } from '@/store/useAppStore';
 import { chatApi } from '@/lib/api/client';
+import { buildMemoryEdges } from '@/lib/perf/graphHotspotBridge';
 
 interface MemoryGraphProps {
   spaceId?: string;
@@ -53,6 +54,7 @@ export function MemoryGraph({ spaceId }: MemoryGraphProps) {
     const edges: any[] = [];
     const memories = graphData?.memories;
     if (memories && Array.isArray(memories)) {
+      const edgeInputs: Array<{ index: number; score: number }> = [];
       memories.forEach((memory: any, index: number) => {
         nodes.push({
           data: {
@@ -62,16 +64,10 @@ export function MemoryGraph({ spaceId }: MemoryGraphProps) {
             score: memory.score,
           },
         });
-        if (index > 0 && memory.score > 0.5) {
-          edges.push({
-            data: {
-              id: `edge-${index}`,
-              source: `memory-${index - 1}`,
-              target: `memory-${index}`,
-            },
-          });
-        }
+        edgeInputs.push({ index, score: Number(memory.score || 0) });
       });
+      const builtEdges = buildMemoryEdges(edgeInputs);
+      builtEdges.forEach((edge) => edges.push({ data: edge }));
     }
 
     if (nodes.length === 0) {

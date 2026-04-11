@@ -11,6 +11,7 @@ import pytest
 
 from app.core import Memory
 from app.orchestrator import CrewAIOrchestrator
+from tests.performance.thresholds import GATES
 
 
 class _DummyMemory:
@@ -80,4 +81,4 @@ async def test_orchestrator_p95_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
 
     durations_ms.sort()
     p95_ms = durations_ms[int(len(durations_ms) * 0.95) - 1]
-    assert p95_ms < 750
+    assert p95_ms < GATES.orchestrator_mock_p95_ms

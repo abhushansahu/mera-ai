@@ -14,6 +14,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import ContextSource
+from app.contracts import CONTRACT_VERSION
 from app.db import Base, engine, get_db
 from app.config import get_settings
 from app.observability import is_langsmith_enabled
@@ -61,6 +62,25 @@ class AddMemoryRequest(BaseModel):
 
 
 class SearchMemoryRequest(BaseModel):
+    user_id: str
+    query: str
+    limit: int = 5
+    space_id: Optional[str] = None
+
+
+class BoundaryContextResearchRequest(BaseModel):
+    query: str
+    context_sources: List[Dict[str, str]]
+
+
+class BoundaryMemoryStoreRequest(BaseModel):
+    user_id: str
+    text: str
+    metadata: Optional[dict] = None
+    space_id: Optional[str] = None
+
+
+class BoundaryMemorySearchRequest(BaseModel):
     user_id: str
     query: str
     limit: int = 5
@@ -177,6 +197,7 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         response.headers["x-request-id"] = request_id
         response.headers["x-response-time-ms"] = f"{(time.perf_counter() - started) * 1000:.2f}"
+        response.headers["x-contract-version"] = CONTRACT_VERSION
         return response
 
     @app.on_event("shutdown")
@@ -208,6 +229,10 @@ def create_app() -> FastAPI:
                 "OBSIDIAN": bool(current_settings.obsidian_rest_token),
             },
         )
+
+    @app.get("/contracts/version")
+    async def contract_version() -> Dict[str, str]:
+        return {"contract_version": CONTRACT_VERSION}
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
@@ -243,7 +268,11 @@ def create_app() -> FastAPI:
                 space_manager=space_manager,
             )
         log_timing_summary(logger, "chat_completed", timer.timings_ms)
-        metadata = {**result.metadata, "api_timings_ms": timer.timings_ms}
+        metadata = {
+            **result.metadata,
+            "api_timings_ms": timer.timings_ms,
+            "contract_version": CONTRACT_VERSION,
+        }
         return ChatResponse(
             user_id=request.user_id,
             answer=result.answer,
@@ -297,6 +326,66 @@ def create_app() -> FastAPI:
             )
             results = [{"text": m.text, "metadata": m.metadata, "score": m.score} for m in memories]
             return {"status": "success", "results": results}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/internal/boundary/context/research")
+    async def boundary_context_research(request: BoundaryContextResearchRequest) -> Dict[str, str]:
+        try:
+            sources = [ContextSource(**item) for item in request.context_sources]
+            content = await app.state.orchestrator.context_boundary.research(
+                query=request.query,
+                context_sources=sources,
+            )
+            return {"content": content, "contract_version": CONTRACT_VERSION}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/internal/boundary/memory/store")
+    async def boundary_memory_store(request: BoundaryMemoryStoreRequest, db: AsyncSession = Depends(get_db)) -> Dict[str, str]:
+        try:
+            if request.space_id is None:
+                await app.state.orchestrator.memory_boundary.store(
+                    user_id=request.user_id,
+                    text=request.text,
+                    metadata=request.metadata,
+                )
+            else:
+                memory = await _memory_adapter_for_optional_space(request.space_id, db)
+                await memory.store(
+                    user_id=request.user_id,
+                    text=request.text,
+                    metadata=request.metadata,
+                )
+            return {"status": "ok", "contract_version": CONTRACT_VERSION}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/internal/boundary/memory/search")
+    async def boundary_memory_search(request: BoundaryMemorySearchRequest, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+        try:
+            if request.space_id is None:
+                results = await app.state.orchestrator.memory_boundary.search(
+                    user_id=request.user_id,
+                    query=request.query,
+                    limit=request.limit,
+                )
+            else:
+                memory = await _memory_adapter_for_optional_space(request.space_id, db)
+                raw = await memory.search(
+                    user_id=request.user_id,
+                    query=request.query,
+                    limit=request.limit,
+                )
+                results = [{"text": m.text, "metadata": m.metadata, "score": m.score} for m in raw]
+                return {"results": results, "contract_version": CONTRACT_VERSION}
+            return {
+                "results": [
+                    {"text": m.text, "metadata": m.metadata, "score": m.score}
+                    for m in results
+                ],
+                "contract_version": CONTRACT_VERSION,
+            }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -578,7 +667,11 @@ def create_app() -> FastAPI:
                 if result.plan:
                     timer.add("emit_plan", 0.1)
                 yield f"data: {json.dumps({'type': 'answer', 'content': result.answer})}\n\n"
-                stream_metadata = {**result.metadata, "api_timings_ms": timer.timings_ms}
+                stream_metadata = {
+                    **result.metadata,
+                    "api_timings_ms": timer.timings_ms,
+                    "contract_version": CONTRACT_VERSION,
+                }
                 yield f"data: {json.dumps({'type': 'metadata', 'data': stream_metadata})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 log_timing_summary(logger, "chat_stream_completed", timer.timings_ms)

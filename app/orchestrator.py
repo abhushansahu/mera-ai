@@ -20,6 +20,7 @@ from app.adapters.chroma import ChromaMemoryAdapter
 from app.adapters.openrouter import OpenRouterLLMAdapter
 from app.adapters.obsidian import ObsidianClient
 from app.async_utils import run_coroutine_sync
+from app.boundaries import ContextBoundary, MemoryBoundary
 from app.config import get_settings
 from app.core import ContextSource, LLMMessage, Orchestrator, Query, UserID, WorkflowResult
 from app.crewai import create_agents_for_space, create_tasks_for_workflow
@@ -32,6 +33,8 @@ from app.multi_agent_context_system import (
 )
 from app.observability import observe_langsmith
 from app.performance import TimingCollector, log_timing_summary
+from app.services.context_boundary_service import CoordinatorContextBoundary
+from app.services.memory_boundary_service import ChromaMemoryBoundary
 from app.spaces import SpaceConfig, SpaceManager
 
 logger = logging.getLogger(__name__)
@@ -150,8 +153,10 @@ class CrewAIOrchestrator:
 
     llm: Optional[OpenRouterLLMAdapter] = None
     memory: Optional[ChromaMemoryAdapter] = None
+    memory_boundary: Optional[MemoryBoundary] = None
     obsidian: Optional[ObsidianClient] = None
     coordinator: Optional[MultiAgentCoordinator] = None
+    context_boundary: Optional[ContextBoundary] = None
 
     def __post_init__(self) -> None:
         settings = get_settings()
@@ -168,6 +173,10 @@ class CrewAIOrchestrator:
             self.obsidian = ObsidianClient()
         if self.coordinator is None:
             self.coordinator = MultiAgentCoordinator.production(mem0_wrapper=self.memory)
+        if self.memory_boundary is None:
+            self.memory_boundary = ChromaMemoryBoundary(self.memory)
+        if self.context_boundary is None:
+            self.context_boundary = CoordinatorContextBoundary(self.coordinator)
 
     async def _save_wiki_artifacts(
         self,
@@ -339,8 +348,10 @@ class CrewAIOrchestrator:
         timer = TimingCollector()
 
         space_memory = self.memory
+        space_memory_boundary = self.memory_boundary
         space_obsidian = self.obsidian
         space_coordinator = self.coordinator
+        space_context_boundary = self.context_boundary
         space_schema = None
         active_space: Optional[SpaceConfig] = None
         tokens_used = 0
@@ -361,6 +372,8 @@ class CrewAIOrchestrator:
                     space_memory = _get_memory_for_space(space_config)
                     space_obsidian = ObsidianClient(vault_path=space_config.obsidian_vault_path)
                     space_coordinator = MultiAgentCoordinator.production(mem0_wrapper=space_memory)
+                    space_memory_boundary = ChromaMemoryBoundary(space_memory)
+                    space_context_boundary = CoordinatorContextBoundary(space_coordinator)
                     if space_config.preferred_model:
                         model = space_config.preferred_model
             except RuntimeError:
@@ -368,11 +381,10 @@ class CrewAIOrchestrator:
 
         try:
             context_sources = context_sources or []
-            coordinator_sources = _to_coordinator_sources(context_sources)
 
             async def _search_memories() -> str:
                 with timer.measure("memory_search"):
-                    memories = await space_memory.search(user_id=user_id, query=query, limit=5)
+                    memories = await space_memory_boundary.search(user_id=user_id, query=query, limit=5)
                 return "\n".join([m.text for m in memories])
 
             async def _search_obsidian() -> str:
@@ -385,12 +397,11 @@ class CrewAIOrchestrator:
                     return ""
 
             async def _research_sources() -> str:
-                if not coordinator_sources:
+                if not context_sources:
                     return ""
                 try:
                     with timer.measure("context_source_research"):
-                        spec = ContextSpecification(query=query, sources=coordinator_sources)
-                        return await space_coordinator.research_with_context(spec)
+                        return await space_context_boundary.research(query=query, context_sources=context_sources)
                 except Exception as e:
                     logger.warning(f"Context source research failed: {e}")
                     return f"Context source research failed: {e}"
@@ -495,7 +506,13 @@ class CrewAIOrchestrator:
                     db.add_all(messages)
                     await db.commit()
 
-            asyncio.create_task(space_memory.store(user_id=user_id, text=f"Q: {query}\nA: {answer}", metadata={"source": "crewai-assistant"}))
+            asyncio.create_task(
+                space_memory_boundary.store(
+                    user_id=user_id,
+                    text=f"Q: {query}\nA: {answer}",
+                    metadata={"source": "crewai-assistant"},
+                )
+            )
 
             wiki_artifacts: Dict[str, str] = {}
             lint_report: Optional[Dict[str, Any]] = None
@@ -536,7 +553,7 @@ class CrewAIOrchestrator:
                 metadata={
                     "model": model_used,
                     "tokens_used": tokens_used,
-                    "context_sources_used": len(coordinator_sources),
+                    "context_sources_used": len(context_sources),
                     "source_research_included": bool(source_research),
                     "wiki_artifacts": wiki_artifacts,
                     "wiki_lint_summary": lint_report["summary"] if lint_report else None,

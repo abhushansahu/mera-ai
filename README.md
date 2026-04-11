@@ -74,6 +74,7 @@ This starts:
 
 The UI will be available at http://localhost:3000
 The API will be available at http://localhost:8000
+The Edge API proxy will be available at http://localhost:8081
 
 #### 4. Stop Services
 
@@ -440,6 +441,12 @@ pytest --cov=app tests/
 
 # Run performance smoke checks
 pytest -m performance tests/performance
+
+# Run endpoint benchmark (requires running API)
+python scripts/benchmark_chat_contract.py --base-url http://localhost:8000 --runs 10
+
+# Compare direct API vs edge proxy latency
+python scripts/benchmark_edge_compare.py --direct-base http://localhost:8000 --edge-base http://localhost:8081 --runs 10
 ```
 
 ### Code Structure

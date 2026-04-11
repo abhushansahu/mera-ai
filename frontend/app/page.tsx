@@ -1,14 +1,27 @@
 "use client";
 
+import dynamic from 'next/dynamic';
 import { ChatInterface } from '@/components/chat/ChatInterface';
-import { RPIWorkflow } from '@/components/workflow/RPIWorkflow';
-import { AgentFlow } from '@/components/agents/AgentFlow';
-import { SpacesDashboard } from '@/components/spaces/SpacesDashboard';
-import { MemoryGraph } from '@/components/memory/MemoryGraph';
-import { ContextPanel } from '@/components/context/ContextPanel';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useTheme } from '@/hooks/useTheme';
 import { useState } from 'react';
+
+const RPIWorkflow = dynamic(
+  () => import('@/components/workflow/RPIWorkflow').then((mod) => mod.RPIWorkflow),
+  { ssr: false }
+);
+const SpacesDashboard = dynamic(
+  () => import('@/components/spaces/SpacesDashboard').then((mod) => mod.SpacesDashboard),
+  { ssr: false }
+);
+const MemoryGraph = dynamic(
+  () => import('@/components/memory/MemoryGraph').then((mod) => mod.MemoryGraph),
+  { ssr: false }
+);
+const ContextPanel = dynamic(
+  () => import('@/components/context/ContextPanel').then((mod) => mod.ContextPanel),
+  { ssr: false }
+);
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'chat' | 'spaces'>('chat');

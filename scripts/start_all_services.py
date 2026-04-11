@@ -29,6 +29,7 @@ def is_interactive() -> bool:
 PORTS = {
     "postgres": 5432,
     "app": 8000,
+    "edge": 8081,
     "frontend": 3000,
 }
 
@@ -279,7 +280,7 @@ def start_frontend(project_root: Path) -> Optional[subprocess.Popen]:
     
     # Set environment variable for API URL
     env = os.environ.copy()
-    env["NEXT_PUBLIC_API_URL"] = "http://localhost:8000"
+    env["NEXT_PUBLIC_API_URL"] = "http://localhost:8081"
     
     print(f"{Colors.BLUE}Starting frontend development server...{Colors.RESET}")
     try:
@@ -357,6 +358,7 @@ def print_status():
     print(f"\n{Colors.BOLD}Access URLs:{Colors.RESET}")
     print(f"  - PostgreSQL: {Colors.BLUE}localhost:{PORTS['postgres']}{Colors.RESET}")
     print(f"  - Mera AI API: {Colors.BLUE}http://localhost:8000{Colors.RESET}")
+    print(f"  - Edge API: {Colors.BLUE}http://localhost:8081{Colors.RESET}")
     print(f"  - API Documentation: {Colors.BLUE}http://localhost:8000/docs{Colors.RESET}")
     print(f"  - API Status: {Colors.BLUE}http://localhost:8000/status{Colors.RESET}")
     print(f"  - Frontend UI: {Colors.BLUE}http://localhost:3000{Colors.RESET}")
@@ -457,6 +459,7 @@ def main():
     print(f"\n{Colors.BLUE}Waiting for services to be ready...{Colors.RESET}")
     wait_for_service("PostgreSQL", PORTS["postgres"])
     wait_for_service("Mera AI Application", PORTS["app"], url="http://localhost:8000/status")
+    wait_for_service("Edge Proxy", PORTS["edge"], url="http://localhost:8081/healthz")
     
     # Start frontend
     project_root = Path(__file__).parent.parent
