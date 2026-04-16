@@ -14,6 +14,10 @@ from app.config import get_settings
 _ALLOWED_EVENT_TYPES = {"open", "click", "selection", "navigate"}
 
 
+class ObsidianPluginAuthError(ValueError):
+    """Raised when sidecar plugin authentication fails."""
+
+
 @dataclass
 class ObsidianSessionSnapshot:
     session_id: str
@@ -46,7 +50,7 @@ class ObsidianContextService:
             return
         provided = (plugin_secret or "").strip()
         if not provided or provided != required:
-            raise ValueError("Invalid Obsidian plugin secret.")
+            raise ObsidianPluginAuthError("Invalid Obsidian plugin secret.")
 
     def heartbeat(
         self,

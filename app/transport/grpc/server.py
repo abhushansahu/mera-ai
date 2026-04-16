@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+from json import JSONDecodeError
 from typing import Optional
 
 import grpc
 
-from app.services.obsidian_context_service import ObsidianContextService
+from app.services.obsidian_context_service import (
+    ObsidianContextService,
+    ObsidianPluginAuthError,
+)
 from app.transport.grpc.generated import sidecar_pb2, sidecar_pb2_grpc
 
 logger = logging.getLogger(__name__)
@@ -36,7 +40,7 @@ class SidecarContextServicer(sidecar_pb2_grpc.SidecarContextServiceServicer):
                 status=payload["status"],
                 session_id=payload["session_id"],
             )
-        except ValueError as exc:
+        except ObsidianPluginAuthError as exc:
             await context.abort(grpc.StatusCode.UNAUTHENTICATED, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("gRPC heartbeat failed")
@@ -49,6 +53,12 @@ class SidecarContextServicer(sidecar_pb2_grpc.SidecarContextServiceServicer):
     ) -> sidecar_pb2.IngestEventResponse:
         try:
             self.context_service.assert_plugin_secret(request.plugin_secret or None)
+            metadata = {}
+            if request.event.metadata_json:
+                try:
+                    metadata = json.loads(request.event.metadata_json)
+                except JSONDecodeError as exc:
+                    raise ValueError("event.metadata_json must contain valid JSON.") from exc
             event = {
                 "event_id": request.event.event_id or None,
                 "event_type": request.event.event_type,
@@ -58,7 +68,7 @@ class SidecarContextServicer(sidecar_pb2_grpc.SidecarContextServiceServicer):
                 "clicked_target": request.event.clicked_target or None,
                 "cursor_line": request.event.cursor_line or None,
                 "event_ts_ms": request.event.event_ts_ms or None,
-                "metadata": json.loads(request.event.metadata_json) if request.event.metadata_json else {},
+                "metadata": metadata,
             }
             payload = self.context_service.ingest_event(
                 user_id=request.user_id or "default-user",
@@ -72,6 +82,8 @@ class SidecarContextServicer(sidecar_pb2_grpc.SidecarContextServiceServicer):
                 active_note_path=payload.get("active_note_path", "") or "",
                 recent_events=int(payload.get("recent_events", 0)),
             )
+        except ObsidianPluginAuthError as exc:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, str(exc))
         except ValueError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         except Exception as exc:  # pragma: no cover - defensive

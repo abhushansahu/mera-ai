@@ -5,13 +5,11 @@ This script starts (all via Docker Compose):
 - PostgreSQL (port 5432) - Main database
 - Mera AI Application (port 8000) - Main API server
 - Edge API proxy (port 8081) - Migration edge service
-- Frontend UI (port 3000) - Next.js web interface
 
 Docker services run in containers via docker-compose.
 It checks for prerequisites, port conflicts, and manages all services together.
 """
 
-import os
 import signal
 import socket
 import subprocess
@@ -27,7 +25,6 @@ def is_interactive() -> bool:
 
 # Port configuration
 EDGE_PORT = 8081
-DEFAULT_FRONTEND_PORT = 3000
 
 # Colors for terminal output
 class Colors:
@@ -49,23 +46,13 @@ def check_port(port: int) -> bool:
             return True
 
 
-def check_all_ports(frontend_port: int) -> Tuple[bool, List[str]]:
+def check_all_ports() -> Tuple[bool, List[str]]:
     """Check all required ports and return conflicts."""
     conflicts = []
     # Postgres is internal-only in docker-compose and no longer published on host.
     if check_port(EDGE_PORT):
         conflicts.append(f"edge (port {EDGE_PORT})")
-    if check_port(frontend_port):
-        conflicts.append(f"frontend (port {frontend_port})")
     return len(conflicts) == 0, conflicts
-
-
-def pick_frontend_port() -> int:
-    """Choose a host port for frontend, preferring 3000."""
-    for candidate in [3000, 3001, 3002, 3003, 3010]:
-        if not check_port(candidate):
-            return candidate
-    return DEFAULT_FRONTEND_PORT
 
 
 def check_docker_services_running() -> bool:
@@ -177,7 +164,7 @@ def check_env_file() -> bool:
     return True
 
 
-def start_docker_services(frontend_port: int) -> bool:
+def start_docker_services() -> bool:
     """Start Docker services using docker-compose."""
     project_root = Path(__file__).parent.parent
     docker_compose_file = project_root / "docker-compose.yml"
@@ -191,13 +178,10 @@ def start_docker_services(frontend_port: int) -> bool:
 
     print(f"{Colors.BLUE}Starting Docker services (this may take a minute on first run)...{Colors.RESET}")
     try:
-        env = dict(os.environ)
-        env["FRONTEND_PORT"] = str(frontend_port)
         result = subprocess.run(
             cmd,
             cwd=project_root,
             timeout=1800,
-            env=env,
         )
         if result.returncode != 0:
             print(f"{Colors.RED}Error starting Docker services:{Colors.RESET}")
@@ -242,7 +226,7 @@ def wait_for_service(name: str, port: int, url: Optional[str] = None, max_wait: 
     return False
 
 
-def print_status(frontend_port: int):
+def print_status():
     """Print status of all services."""
     print(f"\n{Colors.BOLD}{Colors.BLUE}Service Status:{Colors.RESET}")
     print(f"{'=' * 50}")
@@ -270,7 +254,6 @@ def print_status(frontend_port: int):
     print(f"  - Edge API: {Colors.BLUE}http://localhost:8081{Colors.RESET}")
     print(f"  - API Documentation: {Colors.BLUE}http://localhost:8081/docs{Colors.RESET}")
     print(f"  - API Status: {Colors.BLUE}http://localhost:8081/status{Colors.RESET}")
-    print(f"  - Frontend UI: {Colors.BLUE}http://localhost:{frontend_port}{Colors.RESET}")
 
 
 def cleanup() -> None:
@@ -313,18 +296,12 @@ def main():
     # Check if services are already running
     if check_docker_services_running():
         print(f"{Colors.GREEN}Docker services are already running.{Colors.RESET}")
-        print_status(DEFAULT_FRONTEND_PORT)
+        print_status()
         print(f"\n{Colors.BLUE}To restart services, run: {Colors.RESET}./stop.sh && ./start.sh")
         sys.exit(0)
-
-    frontend_port = pick_frontend_port()
-    if frontend_port != DEFAULT_FRONTEND_PORT:
-        print(
-            f"{Colors.YELLOW}Port 3000 is busy. Using frontend port {frontend_port} instead.{Colors.RESET}"
-        )
     
     # Check for port conflicts
-    ports_ok, conflicts = check_all_ports(frontend_port)
+    ports_ok, conflicts = check_all_ports()
     if not ports_ok:
         print(f"{Colors.YELLOW}Warning: Some ports are already in use:{Colors.RESET}")
         for conflict in conflicts:
@@ -346,7 +323,7 @@ def main():
 
     # Start services
     # Start Docker services (includes PostgreSQL + App)
-    if not start_docker_services(frontend_port):
+    if not start_docker_services():
         print(f"{Colors.RED}Failed to start Docker services.{Colors.RESET}")
         sys.exit(1)
 
@@ -354,19 +331,20 @@ def main():
     print(f"\n{Colors.BLUE}Waiting for services to be ready...{Colors.RESET}")
     wait_for_service("Edge Proxy", EDGE_PORT, url="http://localhost:8081/healthz")
     
-    # Wait for frontend container to be ready
-    wait_for_service("Frontend", frontend_port, url=f"http://localhost:{frontend_port}")
-
     # Print status
-    print_status(frontend_port)
+    print_status()
 
     print(f"\n{Colors.GREEN}{Colors.BOLD}✓ All services are running!{Colors.RESET}")
     print(f"\n{Colors.BOLD}Next steps:{Colors.RESET}")
-    print(f"  - Open UI: {Colors.BLUE}http://localhost:{frontend_port}{Colors.RESET}")
     print(f"  - Test the Edge API: {Colors.BLUE}curl http://localhost:8081/status{Colors.RESET}")
     print(f"  - View API docs: {Colors.BLUE}http://localhost:8081/docs{Colors.RESET}")
-    print(f"  - View logs: {Colors.BLUE}docker-compose logs -f app edge frontend{Colors.RESET}")
+    print(f"  - View logs: {Colors.BLUE}docker-compose logs -f app edge{Colors.RESET}")
     print(f"\n{Colors.YELLOW}Press Ctrl+C to stop all services.{Colors.RESET}\n")
+
+    # For CI/non-interactive usage, return after successful startup.
+    if not is_interactive():
+        print(f"{Colors.BLUE}Non-interactive mode: startup complete, exiting.{Colors.RESET}")
+        return
 
     # Set up signal handlers for graceful shutdown
     def signal_handler(sig, frame):
